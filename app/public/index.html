@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Case Document Review</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Section 37C case review</p>
+          <h1>Document verification board</h1>
+        </div>
+        <div class="save-status" id="saveStatus">Ready</div>
+      </section>
+
+      <section class="search-band">
+        <label for="caseSearch">Find case</label>
+        <div class="search-row">
+          <input id="caseSearch" type="search" placeholder="Search by PSSPF or name" autocomplete="off" />
+          <button id="clearSearch" type="button" title="Clear search" aria-label="Clear search">x</button>
+        </div>
+        <div class="results" id="results"></div>
+      </section>
+
+      <section class="case-layout">
+        <aside class="case-panel">
+          <div class="empty-case" id="emptyCase">Select a case to start reviewing documents.</div>
+          <div class="case-card hidden" id="caseCard">
+            <p class="eyebrow" id="caseCompany"></p>
+            <h2 id="caseTitle"></h2>
+            <p id="caseName"></p>
+            <div class="mini-grid">
+              <div>
+                <span>Interview</span>
+                <strong id="caseInterview"></strong>
+              </div>
+              <div>
+                <span>Contacts</span>
+                <strong id="caseContacts"></strong>
+              </div>
+              <div>
+                <span>Last activity</span>
+                <strong id="caseActivity"></strong>
+              </div>
+              <div>
+                <span>Manual flag</span>
+                <strong id="caseFlag"></strong>
+              </div>
+            </div>
+            <div class="doc-progress">
+              <h3>Document progress</h3>
+              <p id="caseDocProgress"></p>
+            </div>
+            <div class="uploaded-list">
+              <h3>Uploaded files</h3>
+              <div id="uploadedFiles"></div>
+            </div>
+          </div>
+        </aside>
+
+        <section class="board-panel">
+          <div class="board-header">
+            <div>
+              <p class="eyebrow">Intern checklist</p>
+              <h2>Verification board</h2>
+            </div>
+            <div class="legend" aria-label="Status legend">
+              <span><b class="yes">✓</b> Yes</span>
+              <span><b class="no">×</b> No</span>
+              <span><b class="neutral">−</b> Neutral</span>
+            </div>
+          </div>
+          <div class="automation-actions">
+            <button id="autoFillCase" type="button">Auto-fill this case</button>
+            <button id="autoCheckAll" type="button">Auto-check all cases</button>
+            <a id="autoAuditLink" class="audit-link hidden" href="/outputs/review_submissions/auto-document-audit.xlsx">Open auto audit spreadsheet</a>
+          </div>
+
+          <div class="board-table" id="board"></div>
+
+          <div class="review-footer">
+            <label for="caseNotes">Case notes</label>
+            <textarea id="caseNotes" placeholder="Add anything the next reviewer should know"></textarea>
+            <div class="footer-actions">
+              <button id="resetReview" type="button">Reset board</button>
+              <button id="saveReview" type="button">Save to spreadsheet</button>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,156 @@
+[
+  {
+    "document": "ID / Passport - certified copy",
+    "appliesTo": "All claimants & witnesses",
+    "requirement": "Compulsory",
+    "notes": "Certified copy required for every person interviewed",
+    "keywords": ["id", "passport", "identity"]
+  },
+  {
+    "document": "Death certificate of member (DHA-1663) - certified copy",
+    "appliesTo": "Estate / Fund",
+    "requirement": "Compulsory",
+    "notes": "Certified copy required; must be obtained before or at interview",
+    "keywords": ["death", "dha", "certificate"]
+  },
+  {
+    "document": "Member's ID / Passport - certified copy",
+    "appliesTo": "Estate / Fund",
+    "requirement": "Compulsory",
+    "notes": "Certified copy required; to confirm deceased identity on fund records",
+    "keywords": ["member id", "id", "passport", "identity"]
+  },
+  {
+    "document": "Deceased's tax number (SARS)",
+    "appliesTo": "Estate / Fund",
+    "requirement": "Compulsory",
+    "notes": "SARS income tax reference number of the deceased member",
+    "keywords": ["tax", "sars"]
+  },
+  {
+    "document": "Police report (unnatural death)",
+    "appliesTo": "Estate / Fund",
+    "requirement": "Conditional",
+    "notes": "Required where the cause of death is unnatural. Must include cause of death and suspect details if identified.",
+    "keywords": ["police", "saps", "unnatural", "accident", "homicide", "suicide"]
+  },
+  {
+    "document": "Marriage certificate - certified copy",
+    "appliesTo": "Spouse",
+    "requirement": "Compulsory",
+    "notes": "Certified copy required; proves legal spousal relationship",
+    "keywords": ["marriage", "mc", "marrige"]
+  },
+  {
+    "document": "Ante-nuptial contract (ANC)",
+    "appliesTo": "Spouse",
+    "requirement": "Optional",
+    "notes": "If married out of community - may affect dependency",
+    "keywords": ["anc", "ante", "nuptial"]
+  },
+  {
+    "document": "Customary marriage certificate - certified copy",
+    "appliesTo": "Customary law spouse",
+    "requirement": "Compulsory",
+    "notes": "Certified copy required; registered under Customary Marriages Act",
+    "keywords": ["customary", "marriage"]
+  },
+  {
+    "document": "Lobola letter / affidavit",
+    "appliesTo": "Customary law spouse",
+    "requirement": "Conditional",
+    "notes": "Required if no customary marriage certificate is available",
+    "keywords": ["lobola", "affidavit", "aff"]
+  },
+  {
+    "document": "Divorce decree / settlement order - certified copy",
+    "appliesTo": "Divorced spouse / ex-spouse",
+    "requirement": "Compulsory",
+    "notes": "Certified copy required; confirms whether maintenance is owed",
+    "keywords": ["divorce", "settlement"]
+  },
+  {
+    "document": "Maintenance court order - certified copy",
+    "appliesTo": "Divorced spouse / ex-spouse",
+    "requirement": "Conditional",
+    "notes": "Certified copy required if divorce decree does not specify maintenance",
+    "keywords": ["maintenance", "court order"]
+  },
+  {
+    "document": "Proof of cohabitation",
+    "appliesTo": "Life partner (unmarried)",
+    "requirement": "Compulsory",
+    "notes": "Must show shared residence - at least 2 different document types",
+    "keywords": ["cohabitation", "lease", "utility", "residence", "proof of residence"]
+  },
+  {
+    "document": "Joint financial affidavit",
+    "appliesTo": "Life partner (unmarried)",
+    "requirement": "Compulsory",
+    "notes": "Commissioner of Oaths certified; confirms mutual dependency",
+    "keywords": ["joint", "financial", "affidavit", "dependency"]
+  },
+  {
+    "document": "Birth certificate (unabridged preferred) - certified copy",
+    "appliesTo": "Minor children",
+    "requirement": "Compulsory",
+    "notes": "Certified copy required; confirms relationship to deceased",
+    "keywords": ["birth", "bc", "certificate"]
+  },
+  {
+    "document": "ID document - certified copy",
+    "appliesTo": "Children 16 years and older",
+    "requirement": "Compulsory",
+    "notes": "Certified copy required where birth certificate is absent for older children",
+    "keywords": ["id", "identity", "smart id"]
+  },
+  {
+    "document": "Proof of school / tertiary enrollment",
+    "appliesTo": "Children 18-25 (full-time students)",
+    "requirement": "Compulsory",
+    "notes": "Must be current academic year; confirms continued dependency",
+    "keywords": ["school", "tertiary", "enrollment", "student", "study"]
+  },
+  {
+    "document": "SASSA disability / medical certificate - certified copy",
+    "appliesTo": "Disabled dependant child",
+    "requirement": "Conditional",
+    "notes": "Certified copy required if claiming on basis of permanent disability",
+    "keywords": ["sassa", "disability", "medical"]
+  },
+  {
+    "document": "Proof of financial dependency",
+    "appliesTo": "Any financial dependant",
+    "requirement": "Compulsory",
+    "notes": "Shows the member supported them financially - 3-6 months of records",
+    "keywords": ["dependency", "bank statement", "affidavit", "financial"]
+  },
+  {
+    "document": "Proof of residence / cohabitation",
+    "appliesTo": "Non-family dependants",
+    "requirement": "Compulsory",
+    "notes": "For elderly parents or relatives living in member's household",
+    "keywords": ["residence", "cohabitation", "lease", "utility"]
+  },
+  {
+    "document": "Letter of executorship / LOA - certified copy",
+    "appliesTo": "Estate representative",
+    "requirement": "Conditional",
+    "notes": "Only if estate is making a claim on behalf of dependants",
+    "keywords": ["executorship", "loa", "authority"]
+  },
+  {
+    "document": "Last will and testament - certified copy",
+    "appliesTo": "Estate",
+    "requirement": "Optional",
+    "notes": "Fund is not bound by the will but it provides context",
+    "keywords": ["will", "testament"]
+  },
+  {
+    "document": "Nomination / beneficiary form",
+    "appliesTo": "Fund",
+    "requirement": "Optional",
+    "notes": "Printed from the platform; use as reference - not a claimant document",
+    "keywords": ["nomination", "beneficiary"]
+  }
+]

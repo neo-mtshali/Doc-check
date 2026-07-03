@@ -4,8 +4,10 @@ import "./styles.css";
 
 const STORAGE_KEY = "caseDocumentChecklist.v1";
 const SAVED_CASES_KEY = "caseDocumentChecklist.savedCases.v1";
+const MIN_WITNESSES = 2;
+const CERTIFICATION_YEAR = new Date().getFullYear();
 
-const STATUSES = ["Have", "Missing", "N/A", "Asked tracer", "Received but unclear"];
+const STATUSES = ["Have", "Missing", "N/A", "Received but unclear"];
 
 const RELATIONSHIPS = [
   "Spouse",
@@ -16,20 +18,45 @@ const RELATIONSHIPS = [
   "Sibling",
   "Guardian",
   "Other dependant",
-  "Non-benefiting witness",
-  "Employer/colleague witness",
-  "Neighbour witness",
-  "Family member not benefiting",
 ];
 
-const MARRIAGE_STATUSES = ["Unknown", "Never married", "Married", "Divorced", "Customary/lobola", "Cohabiting"];
-const YES_NO_UNKNOWN = ["Unknown", "Yes", "No"];
-const PARENT_LIFE_STATUSES = ["Unknown", "Alive", "Passed away", "Not involved / not known"];
+const CHOOSE_VALUE = "Choose";
+const MARRIAGE_STATUSES = [CHOOSE_VALUE, "Never married", "Married", "Divorced", "Customary/lobola", "Cohabiting"];
+const YES_NO_UNKNOWN = [CHOOSE_VALUE, "Yes", "No"];
+const PARENT_LIFE_STATUSES = [CHOOSE_VALUE, "Alive", "Passed away", "Not involved / not known"];
+const DEATH_TYPES = [CHOOSE_VALUE, "Natural", "Unnatural"];
+
+const DOCUMENT_TEMPLATES = {
+  affidavit: {
+    label: "Download affidavit questions",
+    href: "/documents/affidavit-question-guide.pdf",
+    filename: "Standard Individual Affidavit Question Guides Pack_with_example.pdf",
+  },
+  annexureG: {
+    label: "Download Annexure G",
+    href: "/documents/annexure-g-kids-0-17.pdf",
+    filename: "Annexure G- Kids 0-17 years old - PSSPF-Financial Competency Form.pdf",
+  },
+  annexureH: {
+    label: "Download Annexure H",
+    href: "/documents/annexure-h-kids-18-21.pdf",
+    filename: "Annexure H Kids 18 - 21 years old - ABSA BENEFICIARY.pdf",
+  },
+  familyHistory: {
+    label: "Download family history form",
+    href: "/documents/family-history-questionnaire.pdf",
+    filename: "Family History Questionaire.pdf",
+  },
+  police: {
+    label: "Download police request form",
+    href: "/documents/police-case-information-request.pdf",
+    filename: "Torho Tech Police Case Information Request Form.pdf",
+  },
+};
 
 const MANDATORY_CLAIM_DOCS = [
   doc("certified-death-certificate-copy", "Certified death certificate copy", "Certified copy for the deceased member", "Family / DHA"),
   doc("deceased-certified-id-copy", "Deceased member certified ID copy", "Certified ID copy for the deceased member", "Family"),
-  doc("disposal-death-benefit-form", "Disposal of death benefit form", "Fund disposal form for Section 37C processing", "Family / fund"),
   doc("family-history-questionnaire", "Family History Questionnaire", "General case document for family structure and dependants. It cannot be completed by a spouse, life partner, or girlfriend.", "Family"),
   doc("sars-tax-certificate", "SARS/tax certificate", "SARS tax certificate or tax reference document", "Family / SARS"),
 ];
@@ -53,6 +80,12 @@ const EX_SPOUSE_DOCS = [
   doc("maintenance-order", "Maintenance order", "Court order or written maintenance agreement where applicable", "Ex-spouse"),
   doc("divorce-order", "Divorce order", "Divorce order or settlement agreement", "Ex-spouse"),
   doc("ex-spouse-certified-id", "Ex-spouse certified ID", "Certified copy of ex-spouse ID", "Ex-spouse"),
+];
+
+const PREVIOUS_DIVORCE_DOCS = [
+  doc("previous-divorce-order", "Divorce order", "Court divorce order or settlement agreement from the previous marriage", "Ex-spouse / family"),
+  doc("previous-ex-spouse-affidavit", "Ex-spouse affidavit", "Affidavit from the ex-spouse confirming divorce, maintenance and dependency facts", "Ex-spouse"),
+  doc("previous-ex-spouse-certified-id", "Ex-spouse certified ID", "Certified copy of ex-spouse ID", "Ex-spouse"),
 ];
 
 const MINOR_CHILD_DOCS = [
@@ -125,11 +158,15 @@ const OTHER_DEPENDANT_DOCS = [
 const WITNESS_DOCS = [
   doc("witness-certified-id", "Witness certified ID", "Certified ID copy for the witness", "Witness"),
   doc("witness-affidavit", "Witness affidavit or statement", "Statement should cover relationship, marriage/partner status, children, supported persons and other dependants", "Witness"),
-  doc("witness-support-link", "Link to supported person", "Note which beneficiary/person the witness is supporting", "Tracer / witness"),
 ];
 
-function doc(id, title, note, provider = "") {
-  return { id, title, note, provider };
+function doc(id, title, note) {
+  const requiresCurrentYearCertification = /\b(certified id|id copy|certified copy.*\bid\b|certified copy.*issued)\b/i.test(`${title} ${note}`);
+  return {
+    id,
+    title,
+    note: requiresCurrentYearCertification ? `${note} Must be certified in ${CERTIFICATION_YEAR}.` : note,
+  };
 }
 
 function uid(prefix) {
@@ -138,11 +175,13 @@ function uid(prefix) {
 
 function defaultScenarios() {
   return {
-    marriageStatus: "Unknown",
-    maintenancePaid: "Unknown",
-    parentStatus: "Unknown",
-    motherStatus: "Unknown",
-    fatherStatus: "Unknown",
+    marriageStatus: CHOOSE_VALUE,
+    previouslyDivorced: CHOOSE_VALUE,
+    maintenancePaid: CHOOSE_VALUE,
+    parentStatus: CHOOSE_VALUE,
+    motherStatus: CHOOSE_VALUE,
+    fatherStatus: CHOOSE_VALUE,
+    deathType: CHOOSE_VALUE,
     parentDeathCertificateUnavailable: false,
   };
 }
@@ -162,16 +201,18 @@ function newWitness() {
     id: uid("witness"),
     name: "",
     idNumber: "",
-    linkedBeneficiaryId: "",
     relationshipToDeceased: "",
   };
+}
+
+function createWitnessSlots(count = MIN_WITNESSES) {
+  return Array.from({ length: count }, () => newWitness());
 }
 
 function emptyRecord(status = "Missing") {
   return {
     status,
     notes: "",
-    provider: "",
   };
 }
 
@@ -186,7 +227,7 @@ const initialCase = {
   },
   scenarios: defaultScenarios(),
   beneficiaries: [newBeneficiary()],
-  witnesses: [newWitness()],
+  witnesses: createWitnessSlots(),
   documentRecords: {},
 };
 
@@ -255,9 +296,6 @@ function App() {
     setCaseData((current) => ({
       ...current,
       beneficiaries: current.beneficiaries.filter((person) => person.id !== id),
-      witnesses: current.witnesses.map((witness) =>
-        witness.linkedBeneficiaryId === id ? { ...witness, linkedBeneficiaryId: "" } : witness,
-      ),
     }));
   }
 
@@ -293,7 +331,7 @@ function App() {
       ...initialCase,
       scenarios: defaultScenarios(),
       beneficiaries: [newBeneficiary()],
-      witnesses: [newWitness()],
+      witnesses: createWitnessSlots(),
       documentRecords: {},
     });
   }
@@ -314,15 +352,16 @@ function App() {
     setSavedCases((current) => current.filter((item) => item.id !== id));
   }
 
-  function exportCase() {
-    const blob = new Blob([JSON.stringify(caseData, null, 2)], { type: "application/json" });
-    downloadBlob(blob, `${caseData.caseReference || "case-document-checklist"}.json`);
+  function exportFullCaseInfo() {
+    const exportText = buildFullCaseInfoText(caseData, sections, progress, readiness);
+    const blob = new Blob([exportText], { type: "text/plain" });
+    downloadBlob(blob, `${caseData.caseReference || "case"}-full-case-info.txt`);
   }
 
-  function exportTracerRequest() {
-    const requestText = buildTracerRequestText(caseData, sections, progress, readiness);
-    const blob = new Blob([requestText], { type: "text/plain" });
-    downloadBlob(blob, `${caseData.caseReference || "case"}-tracer-document-request.txt`);
+  function exportMissingDocuments() {
+    const exportText = buildMissingDocumentsText(caseData, sections);
+    const blob = new Blob([exportText], { type: "text/plain" });
+    downloadBlob(blob, `${caseData.caseReference || "case"}-missing-documents.txt`);
   }
 
   async function copyWhatsAppMessage() {
@@ -351,8 +390,8 @@ function App() {
           <button type="button" className="secondary-btn" onClick={() => importRef.current?.click()}>Import</button>
           <input ref={importRef} type="file" accept="application/json" hidden onChange={importCase} />
           <button type="button" className="secondary-btn" onClick={saveCurrentCase}>Save case</button>
-          <button type="button" className="secondary-btn" onClick={exportCase}>Export JSON</button>
-          <button type="button" className="secondary-btn" onClick={exportTracerRequest}>Export tracer request</button>
+          <button type="button" className="secondary-btn" onClick={exportFullCaseInfo}>Export full case info</button>
+          <button type="button" className="secondary-btn" onClick={exportMissingDocuments}>Export missing docs</button>
           <button type="button" className="secondary-btn" onClick={copyWhatsAppMessage}>Copy WhatsApp message</button>
           <button type="button" className="danger-btn" onClick={resetCase}>New / Reset</button>
         </div>
@@ -383,8 +422,7 @@ function App() {
               <Field label="Full names" value={caseData.deceased.fullName} onChange={(value) => updateDeceased("fullName", value)} placeholder="Deceased member name" />
               <Field label="ID number" value={caseData.deceased.idNumber} onChange={(value) => updateDeceased("idNumber", value)} placeholder="13-digit SA ID" hint={ageLabel(caseData.deceased)} />
               <Field label="Manual age" value={caseData.deceased.manualAge} onChange={(value) => updateDeceased("manualAge", value)} placeholder="If ID is unavailable" />
-              <Field label="Date of death" value={caseData.deceased.dateOfDeath} onChange={(value) => updateDeceased("dateOfDeath", value)} placeholder="YYYY-MM-DD" />
-              <Field label="Tax number" value={caseData.deceased.taxNumber} onChange={(value) => updateDeceased("taxNumber", value)} placeholder="SARS tax number" />
+              <Field label="Date of death (optional)" value={caseData.deceased.dateOfDeath} onChange={(value) => updateDeceased("dateOfDeath", value)} placeholder="If available" />
             </div>
           </Panel>
 
@@ -393,7 +431,10 @@ function App() {
               <SelectField label="Marriage status" value={caseData.scenarios.marriageStatus} onChange={(value) => updateScenario("marriageStatus", value)}>
                 {MARRIAGE_STATUSES.map((item) => <option key={item}>{item}</option>)}
               </SelectField>
-              {caseData.scenarios.marriageStatus === "Divorced" ? (
+              <SelectField label="Previously divorced" value={caseData.scenarios.previouslyDivorced} onChange={(value) => updateScenario("previouslyDivorced", value)}>
+                {YES_NO_UNKNOWN.map((item) => <option key={item}>{item}</option>)}
+              </SelectField>
+              {caseData.scenarios.marriageStatus === "Divorced" || caseData.scenarios.previouslyDivorced === "Yes" ? (
                 <SelectField label="Maintenance was paid" value={caseData.scenarios.maintenancePaid} onChange={(value) => updateScenario("maintenancePaid", value)}>
                   {YES_NO_UNKNOWN.map((item) => <option key={item}>{item}</option>)}
                 </SelectField>
@@ -403,6 +444,9 @@ function App() {
               </SelectField>
               <SelectField label="Father of deceased" value={caseData.scenarios.fatherStatus} onChange={(value) => updateScenario("fatherStatus", value)}>
                 {PARENT_LIFE_STATUSES.map((item) => <option key={item}>{item}</option>)}
+              </SelectField>
+              <SelectField label="Death type" value={caseData.scenarios.deathType} onChange={(value) => updateScenario("deathType", value)}>
+                {DEATH_TYPES.map((item) => <option key={item}>{item}</option>)}
               </SelectField>
             </div>
           </Panel>
@@ -435,8 +479,7 @@ function App() {
                   key={witness.id}
                   index={index}
                   witness={witness}
-                  beneficiaries={caseData.beneficiaries}
-                  canRemove={caseData.witnesses.length > 1}
+                  canRemove={caseData.witnesses.length > MIN_WITNESSES}
                   onChange={updateWitness}
                   onRemove={removeWitness}
                 />
@@ -452,12 +495,11 @@ function App() {
               <p>{progress.actionable ? `${progress.actionable} action items for tracer or review` : "All applicable documents are marked received or not applicable"}</p>
             </div>
             <div className="checklist-actions">
-              <button type="button" className="small-btn" onClick={copyWhatsAppMessage}>Copy WhatsApp</button>
               <span className={`chip ${readinessTone(readiness)}`}>{readiness}</span>
             </div>
           </div>
 
-          <TracerHandoffPanel handoff={handoff} onExport={exportTracerRequest} />
+          <TracerHandoffPanel handoff={handoff} />
 
           {sections.map((section) => (
             <ChecklistSection
@@ -473,8 +515,8 @@ function App() {
   );
 }
 
-function TracerHandoffPanel({ handoff, onExport }) {
-  const actionable = [...handoff.missing, ...handoff.asked, ...handoff.unclear].slice(0, 10);
+function TracerHandoffPanel({ handoff }) {
+  const actionable = [...handoff.missing, ...handoff.unclear].slice(0, 10);
 
   return (
     <section className="handoff-panel">
@@ -483,21 +525,19 @@ function TracerHandoffPanel({ handoff, onExport }) {
           <h2>Tracer Handoff</h2>
           <p>{handoff.actionableCount ? `${handoff.actionableCount} items need action` : "No actionable document requests right now"}</p>
         </div>
-        <button type="button" className="small-btn" onClick={onExport}>Export handoff</button>
       </header>
       <div className="handoff-summary">
         <SummaryPill label="Have" value={handoff.haveCount} tone="complete" />
         <SummaryPill label="Missing" value={handoff.missing.length} tone={handoff.missing.length ? "missing" : "complete"} />
-        <SummaryPill label="Asked tracer" value={handoff.asked.length} />
         <SummaryPill label="Unclear" value={handoff.unclear.length} tone={handoff.unclear.length ? "warning" : ""} />
       </div>
       <div className="missing-preview">
         {actionable.length ? actionable.map((item) => (
-          <article key={`${item.key}-${item.status}`}>
+          <article key={`${item.key}-${item.record.status}`}>
             <strong>{item.title}</strong>
-            <span>{item.group} - {item.status}</span>
+            <span>{item.group} - {item.record.status}</span>
           </article>
-        )) : <p className="empty-note">Ready to share. Nothing is currently marked missing, asked from tracer, or unclear.</p>}
+        )) : <p className="empty-note">Ready to share. Nothing is currently marked missing or unclear.</p>}
       </div>
     </section>
   );
@@ -620,7 +660,7 @@ function BeneficiaryEditor({ person, index, canRemove, onChange, onRemove }) {
   );
 }
 
-function WitnessEditor({ witness, index, beneficiaries, canRemove, onChange, onRemove }) {
+function WitnessEditor({ witness, index, canRemove, onChange, onRemove }) {
   return (
     <article className="person-card">
       <div className="person-title">
@@ -629,13 +669,7 @@ function WitnessEditor({ witness, index, beneficiaries, canRemove, onChange, onR
       </div>
       <Field label="Full names" value={witness.name} onChange={(value) => onChange(witness.id, "name", value)} placeholder="Witness full name" />
       <Field label="ID number" value={witness.idNumber} onChange={(value) => onChange(witness.id, "idNumber", value)} placeholder="Witness ID number" />
-      <Field label="Relationship to deceased" value={witness.relationshipToDeceased} onChange={(value) => onChange(witness.id, "relationshipToDeceased", value)} placeholder="e.g. neighbour, sibling, employer" />
-      <SelectField label="Supports beneficiary/person" value={witness.linkedBeneficiaryId} onChange={(value) => onChange(witness.id, "linkedBeneficiaryId", value)}>
-        <option value="">Unlinked</option>
-        {beneficiaries.map((person) => (
-          <option key={person.id} value={person.id}>{person.name || "Unnamed beneficiary"}</option>
-        ))}
-      </SelectField>
+      <Field label="Relationship to deceased" value={witness.relationshipToDeceased} onChange={(value) => onChange(witness.id, "relationshipToDeceased", value)} placeholder="e.g. neighbour, friend, colleague, or non-benefiting family member" />
       <footer>
         <span>{witness.idNumber ? "ID captured" : "ID missing"}</span>
         {canRemove ? <button type="button" className="text-danger" onClick={() => onRemove(witness.id)}>Remove</button> : null}
@@ -647,7 +681,7 @@ function WitnessEditor({ witness, index, beneficiaries, canRemove, onChange, onR
 function ChecklistSection({ section, records, onChange }) {
   const sectionRows = section.docs.map((item) => {
     const key = docKey(section.key, item.id);
-    return { item, key, record: getDocumentRecord(records, key, item.provider) };
+    return { item, key, record: getDocumentRecord(records, key) };
   });
   const applicable = sectionRows.filter(({ record }) => record.status !== "N/A");
   const done = applicable.filter(({ record }) => record.status === "Have").length;
@@ -671,6 +705,7 @@ function ChecklistSection({ section, records, onChange }) {
             <div className="doc-main">
               <strong>{item.title}</strong>
               <small>{item.note}</small>
+              <DocumentTemplateButton item={item} />
             </div>
             <label className="compact-field">
               <span>Status</span>
@@ -678,20 +713,24 @@ function ChecklistSection({ section, records, onChange }) {
                 {STATUSES.map((status) => <option key={status}>{status}</option>)}
               </select>
             </label>
-            <div className="doc-meta-grid">
-              <label className="compact-field">
-                <span>Provider</span>
-                <input value={record.provider || item.provider || ""} onChange={(event) => onChange(key, { provider: event.target.value })} placeholder="Who must provide it" />
-              </label>
-              <label className="compact-field">
-                <span>Notes</span>
-                <input value={record.notes} onChange={(event) => onChange(key, { notes: event.target.value })} placeholder="Tracer notes or review issue" />
-              </label>
-            </div>
+            <label className="compact-field">
+              <span>Notes</span>
+              <input value={record.notes} onChange={(event) => onChange(key, { notes: event.target.value })} placeholder="Tracer notes or review issue" />
+            </label>
           </article>
         ))}
       </div>
     </article>
+  );
+}
+
+function DocumentTemplateButton({ item }) {
+  const template = getDocumentTemplate(item);
+  if (!template) return null;
+  return (
+    <a className="template-link" href={template.href} download={template.filename}>
+      {template.label}
+    </a>
   );
 }
 
@@ -726,6 +765,9 @@ function buildSections(caseData) {
     });
   }
 
+  const spouse = spouseBeneficiarySection(scenarios);
+  if (spouse) sections.push(spouse);
+
   for (const person of caseData.beneficiaries) {
     const type = beneficiaryType(person, scenarios);
     sections.push({
@@ -737,25 +779,19 @@ function buildSections(caseData) {
     });
   }
 
-  const capturedWitnesses = caseData.witnesses.filter(hasWitnessDetails);
-  if (!capturedWitnesses.length) {
+  for (const parent of parentBeneficiarySections(scenarios)) {
+    sections.push(parent);
+  }
+
+  for (const [index, witness] of caseData.witnesses.entries()) {
+    const hasDetails = hasWitnessDetails(witness);
     sections.push({
-      key: "witnesses:missing",
-      title: "Witnesses missing",
-      subtitle: "No witness details captured yet",
+      key: hasDetails ? `witness:${witness.id}` : `witness:missing:${index}`,
+      title: hasDetails ? `${witness.name || `Witness ${index + 1}`} - Witness` : `Witness ${index + 1} missing`,
+      subtitle: hasDetails ? witnessSubtitle(witness, caseData.beneficiaries) : "Witness affidavit required",
       docs: WITNESS_DOCS,
       tone: "witness",
     });
-  } else {
-    for (const witness of capturedWitnesses) {
-      sections.push({
-        key: `witness:${witness.id}`,
-        title: `${witness.name || "Unnamed witness"} - Witness`,
-        subtitle: witnessSubtitle(witness, caseData.beneficiaries),
-        docs: WITNESS_DOCS,
-        tone: "witness",
-      });
-    }
   }
 
   return sections;
@@ -768,6 +804,7 @@ function buildScenarioDocs(caseData) {
   if (scenarios.marriageStatus === "Divorced") {
     docs.push(
       doc("scenario-ex-spouse-affidavit", "Ex-spouse affidavit", "Required where the deceased was divorced or maintenance may be relevant", "Ex-spouse / tracer"),
+      doc("scenario-ex-spouse-certified-id", "Ex-spouse certified ID", "Certified copy of ex-spouse ID", "Ex-spouse"),
       doc("scenario-divorce-order", "Divorce order", "Court divorce order or settlement agreement", "Ex-spouse / family"),
     );
     if (scenarios.maintenancePaid !== "No") {
@@ -775,45 +812,68 @@ function buildScenarioDocs(caseData) {
     }
   }
 
-  if (["Married", "Customary/lobola", "Cohabiting"].includes(scenarios.marriageStatus)) {
-    docs.push(
-      doc("scenario-spouse-affidavit", "Spouse/partner affidavit", "Affidavit confirming relationship, household, children and support", "Spouse / partner"),
-      doc("scenario-spouse-certified-id", "Spouse/partner certified ID", "Certified ID copy", "Spouse / partner"),
-      doc("scenario-spouse-bank-statement", "3-month bank statement", "Bank statement", "Spouse / partner"),
-      doc("scenario-marriage-partner-proof", "Proof of marriage/lobola/customary union/cohabitation", "Certificate, lobola proof, customary union proof or cohabitation affidavit", "Spouse / partner"),
-    );
+  if (scenarios.previouslyDivorced === "Yes" && scenarios.marriageStatus !== "Divorced") {
+    docs.push(...PREVIOUS_DIVORCE_DOCS);
+    if (scenarios.maintenancePaid !== "No") {
+      docs.push(doc("previous-maintenance-order", "Maintenance order", "Maintenance order or proof of maintenance arrangement from the previous marriage", "Ex-spouse / court"));
+    }
   }
 
-  docs.push(...parentLifeStatusDocs("mother", "Mother", scenarios.motherStatus));
-  docs.push(...parentLifeStatusDocs("father", "Father", scenarios.fatherStatus));
+  docs.push(...parentDeathDocs("mother", "Mother", scenarios.motherStatus));
+  docs.push(...parentDeathDocs("father", "Father", scenarios.fatherStatus));
 
-  if (scenarios.motherStatus === "Unknown" && scenarios.fatherStatus === "Unknown" && scenarios.parentStatus !== "Unknown") {
-    if (scenarios.parentStatus === "Passed away") {
-      docs.push(...(scenarios.parentDeathCertificateUnavailable ? PARENT_DEATH_UNAVAILABLE_DOCS : PARENT_PASSED_DOCS));
-    } else {
-      docs.push(...PARENT_ALIVE_DOCS);
-    }
+  if (scenarios.deathType === "Unnatural") {
+    docs.push(doc("unnatural-death-police-report-request", "Police case information request form", "Required where the death was unnatural", "Police"));
   }
 
   return uniqueDocs(docs);
 }
 
-function parentLifeStatusDocs(key, label, status) {
-  if (status === "Alive" || status === "Unknown") {
-    const notePrefix = status === "Unknown"
-      ? "Required unless this parent is marked passed away or not involved/not known."
-      : "";
-    return [
-      doc(`${key}-certified-id`, `${label} certified ID`, `${notePrefix} Certified ID copy for the deceased member's ${label.toLowerCase()}`.trim(), label),
-      doc(`${key}-affidavit`, `${label} affidavit`, `${notePrefix} Affidavit from the deceased member's ${label.toLowerCase()} confirming family background, dependency and other dependants`.trim(), label),
-    ];
-  }
+function spouseBeneficiarySection(scenarios) {
+  if (scenarios.marriageStatus !== "Married") return null;
+  return {
+    key: "auto-beneficiary:spouse",
+    title: "Spouse - Spouse",
+    subtitle: "Automatically added because marriage status is Married",
+    docs: SPOUSE_DOCS,
+    tone: "spouse",
+  };
+}
+
+function parentDeathDocs(key, label, status) {
   if (status === "Passed away") {
     return [
       doc(`${key}-death-certificate`, `${label} certified death certificate`, `Certified death certificate for the deceased member's ${label.toLowerCase()}`, "Family / DHA"),
     ];
   }
   return [];
+}
+
+function parentBeneficiarySections(scenarios) {
+  return [
+    parentBeneficiarySection("mother", "Mother", scenarios.motherStatus),
+    parentBeneficiarySection("father", "Father", scenarios.fatherStatus),
+  ].filter(Boolean);
+}
+
+function parentBeneficiarySection(key, label, status) {
+  if (status !== "Alive") return null;
+  return {
+    key: `parent-beneficiary:${key}`,
+    title: `${label} - Parent`,
+    subtitle: "Parent marked alive in family background",
+    docs: parentAliveDocs(key, label),
+    tone: "parent",
+  };
+}
+
+function parentAliveDocs(key, label) {
+  return [
+    doc(`${key}-parent-certified-id`, `${label} certified ID`, `Certified copy of the deceased member's ${label.toLowerCase()}'s ID`),
+    doc(`${key}-parent-affidavit`, `${label} affidavit`, `Affidavit from the deceased member's ${label.toLowerCase()} confirming family background, dependency and other dependants`),
+    doc(`${key}-parent-bank-statement`, `${label} 3-month bank statement`, `Bank statement for the deceased member's ${label.toLowerCase()}`),
+    doc(`${key}-parent-dependency-proof`, `${label} proof of financial dependency`, `Evidence that the deceased supported the ${label.toLowerCase()}`),
+  ];
 }
 
 function beneficiaryType(person, scenarios) {
@@ -827,10 +887,7 @@ function beneficiaryType(person, scenarios) {
     return { key: "ex-spouse", label: "Ex-spouse / divorced spouse", docs: EX_SPOUSE_DOCS };
   }
   if (person.relationship === "Parent") {
-    const parentDocs = scenarios.parentStatus === "Passed away"
-      ? (scenarios.parentDeathCertificateUnavailable ? PARENT_DEATH_UNAVAILABLE_DOCS : PARENT_PASSED_DOCS)
-      : PARENT_ALIVE_DOCS;
-    return { key: "parent", label: "Parent", docs: parentDocs };
+    return { key: "parent", label: "Parent", docs: PARENT_ALIVE_DOCS };
   }
   if (person.relationship === "Sibling") {
     return { key: "sibling", label: "Sibling", docs: SIBLING_DOCS };
@@ -844,9 +901,6 @@ function beneficiaryType(person, scenarios) {
     if (age != null && age <= 17) return { key: "minor-child", label: "Minor child", docs: MINOR_CHILD_DOCS };
     if (age != null && age <= 21) return { key: "young-adult-child", label: "Child aged 18-21", docs: YOUNG_ADULT_CHILD_DOCS };
     return { key: "major-child", label: age == null ? "Child - age needed" : "Major child", docs: ADULT_CHILD_DOCS };
-  }
-  if (["Non-benefiting witness", "Employer/colleague witness", "Neighbour witness", "Family member not benefiting"].includes(person.relationship)) {
-    return { key: "witness-related", label: person.relationship, docs: WITNESS_DOCS };
   }
   return { key: "other-dependant", label: "Other dependant", docs: OTHER_DEPENDANT_DOCS };
 }
@@ -863,7 +917,8 @@ function uniqueDocs(docs) {
 function scenarioSubtitle(scenarios) {
   return [
     `Marriage: ${scenarios.marriageStatus}`,
-    scenarios.marriageStatus === "Divorced" ? `Maintenance: ${scenarios.maintenancePaid}` : null,
+    `Previously divorced: ${scenarios.previouslyDivorced}`,
+    scenarios.marriageStatus === "Divorced" || scenarios.previouslyDivorced === "Yes" ? `Maintenance: ${scenarios.maintenancePaid}` : null,
     `Mother: ${scenarios.motherStatus}`,
     `Father: ${scenarios.fatherStatus}`,
   ].filter(Boolean).join(" | ");
@@ -875,9 +930,8 @@ function beneficiarySubtitle(person) {
   return `${idPart} | ${age == null ? "age not captured" : `age ${age}`}`;
 }
 
-function witnessSubtitle(witness, beneficiaries) {
-  const linked = beneficiaries.find((person) => person.id === witness.linkedBeneficiaryId);
-  return `${witness.relationshipToDeceased || "relationship not captured"} | Supports: ${linked?.name || "Unlinked"}`;
+function witnessSubtitle(witness) {
+  return witness.relationshipToDeceased || "relationship not captured";
 }
 
 function hasWitnessDetails(witness) {
@@ -889,7 +943,6 @@ function getProgress(sections, records) {
   const applicable = rows.filter((row) => row.record.status !== "N/A");
   const have = applicable.filter((row) => row.record.status === "Have").length;
   const missing = applicable.filter((row) => row.record.status === "Missing").length;
-  const asked = applicable.filter((row) => row.record.status === "Asked tracer").length;
   const unclear = applicable.filter((row) => row.record.status === "Received but unclear").length;
   const notApplicable = rows.length - applicable.length;
 
@@ -898,17 +951,16 @@ function getProgress(sections, records) {
     applicable: applicable.length,
     have,
     missing,
-    asked,
     unclear,
     notApplicable,
-    actionable: missing + asked + unclear,
+    actionable: missing + unclear,
     percent: applicable.length ? Math.round((have / applicable.length) * 100) : 100,
   };
 }
 
 function getReadiness(progress) {
   if (progress.missing > 0) return "Not ready";
-  if (progress.asked > 0 || progress.unclear > 0) return "Ready for follow-up";
+  if (progress.unclear > 0) return "Ready for follow-up";
   if (progress.have > 0 && progress.percent === 100) return "Ready for trustee pack";
   return "Ready for review";
 }
@@ -924,16 +976,14 @@ function buildTracerHandoff(caseData, sections) {
   const rows = collectDocumentRows(sections, caseData.documentRecords);
   const have = rows.filter((row) => row.record.status === "Have");
   const missing = rows.filter((row) => row.record.status === "Missing");
-  const asked = rows.filter((row) => row.record.status === "Asked tracer");
   const unclear = rows.filter((row) => row.record.status === "Received but unclear");
 
   return {
     have,
     missing,
-    asked,
     unclear,
     haveCount: have.length,
-    actionableCount: missing.length + asked.length + unclear.length,
+    actionableCount: missing.length + unclear.length,
   };
 }
 
@@ -947,17 +997,16 @@ function collectDocumentRows(sections, records) {
         subtitle: section.subtitle,
         title: item.title,
         note: item.note,
-        defaultProvider: item.provider,
-        record: getDocumentRecord(records, key, item.provider),
+        record: getDocumentRecord(records, key),
       };
     }),
   );
 }
 
-function buildTracerRequestText(caseData, sections, progress, readiness) {
+function buildFullCaseInfoText(caseData, sections, progress, readiness) {
   const rows = collectDocumentRows(sections, caseData.documentRecords);
   const lines = [
-    `Case document tracer request: ${caseData.caseReference || "Case reference not captured"}`,
+    `Full case information: ${caseData.caseReference || "Case reference not captured"}`,
     `Generated: ${new Date().toLocaleString("en-ZA")}`,
     `Readiness: ${readiness}`,
     `Progress: ${progress.have} of ${progress.applicable} applicable documents marked Have (${progress.percent}%)`,
@@ -965,8 +1014,7 @@ function buildTracerRequestText(caseData, sections, progress, readiness) {
     "Deceased member details",
     `- Name: ${caseData.deceased.fullName || "Not captured"}`,
     `- ID: ${caseData.deceased.idNumber || "Not captured"}`,
-    `- Date of death: ${caseData.deceased.dateOfDeath || "Not captured"}`,
-    `- Tax number: ${caseData.deceased.taxNumber || "Not captured"}`,
+    caseData.deceased.dateOfDeath ? `- Date of death: ${caseData.deceased.dateOfDeath}` : null,
     "",
     "Case background",
     ...scenarioLines(caseData.scenarios),
@@ -978,21 +1026,45 @@ function buildTracerRequestText(caseData, sections, progress, readiness) {
     ...witnessLines(caseData),
   ];
 
-  appendStatusGroup(lines, "Documents already received", rows, "Have");
-  appendStatusGroup(lines, "Documents missing", rows, "Missing", { includeNotes: true });
-  appendStatusGroup(lines, "Documents already asked from tracer", rows, "Asked tracer", { includeNotes: true });
-  appendStatusGroup(lines, "Unclear documents needing review", rows, "Received but unclear", { includeNotes: true });
-  appendNotesGroup(lines, rows);
+  appendAllDocumentsGroup(lines, rows);
+
+  return `${lines.filter(Boolean).join("\n")}\n`;
+}
+
+function buildMissingDocumentsText(caseData, sections) {
+  const rows = collectDocumentRows(sections, caseData.documentRecords);
+  const missing = rows.filter((row) => row.record.status === "Missing");
+  const lines = [
+    `Missing documents: ${caseData.caseReference || "Case reference not captured"}`,
+    `Generated: ${new Date().toLocaleString("en-ZA")}`,
+    "",
+    "Case details",
+    `- Deceased member: ${caseData.deceased.fullName || "Not captured"}`,
+    `- Deceased ID: ${caseData.deceased.idNumber || "Not captured"}`,
+  ];
+
+  lines.push("", "Missing documents only");
+  if (!missing.length) {
+    lines.push("- None");
+    return `${lines.join("\n")}\n`;
+  }
+
+  for (const [group, items] of groupRows(missing)) {
+    lines.push(`${group}:`);
+    for (const item of items) {
+      lines.push(`- ${formatDocumentLine(item, { includeNotes: true })}`);
+    }
+  }
 
   return `${lines.join("\n")}\n`;
 }
 
 function buildWhatsAppRequestText(caseData, sections) {
   const rows = collectDocumentRows(sections, caseData.documentRecords)
-    .filter((row) => row.record.status === "Missing" || row.record.status === "Asked tracer");
+    .filter((row) => row.record.status === "Missing");
 
   const lines = [
-    "Hi, please assist with the outstanding Section 37C documents below.",
+    "Good day, please assist with the outstanding Section 37C documents below.",
     "",
     `Case: ${caseData.caseReference || "Not captured"}`,
     `Deceased member: ${caseData.deceased.fullName || "Not captured"}`,
@@ -1001,7 +1073,7 @@ function buildWhatsAppRequestText(caseData, sections) {
   ];
 
   if (!rows.length) {
-    lines.push("", "No documents are currently marked Missing or Asked tracer.");
+    lines.push("", "No documents are currently marked Missing.");
     return `${lines.join("\n")}\n`;
   }
 
@@ -1018,48 +1090,52 @@ function buildWhatsAppRequestText(caseData, sections) {
 }
 
 function formatWhatsAppLine(item) {
-  const provider = item.record.provider || item.defaultProvider;
   const parts = [item.title];
-  if (provider) parts.push(`from ${provider}`);
-  if (item.record.status === "Asked tracer") parts.push("already requested from tracer");
+  if (isAffidavitDocument(item)) {
+    parts.push("a document with the questions to be answered will be sent");
+  }
+  if (isAnnexureGHDocument(item)) {
+    parts.push("the annexure will be sent");
+  }
   if (item.record.notes) parts.push(`note: ${item.record.notes}`);
   return parts.join(" - ");
 }
 
-function appendStatusGroup(lines, title, rows, status, options = {}) {
-  lines.push("", title);
-  const matches = rows.filter((row) => row.record.status === status);
-  if (!matches.length) {
-    lines.push("- None");
-    return;
-  }
-  for (const [group, items] of groupRows(matches)) {
-    lines.push(`${group}:`);
-    for (const item of items) {
-      lines.push(`- ${formatDocumentLine(item, options)}`);
-    }
-  }
+function isAffidavitDocument(item) {
+  return /\baffidavit\b/i.test(`${item.title} ${item.note}`);
 }
 
-function appendNotesGroup(lines, rows) {
-  const noted = rows.filter((row) => row.record.notes || row.record.provider);
-  lines.push("", "Notes grouped by person/relationship");
-  if (!noted.length) {
+function isAnnexureGHDocument(item) {
+  return /\bannexure\s+[gh]\b/i.test(`${item.title} ${item.note}`);
+}
+
+function getDocumentTemplate(item) {
+  const text = `${item.title} ${item.note}`;
+  if (/\bannexure\s+g\b/i.test(text)) return DOCUMENT_TEMPLATES.annexureG;
+  if (/\bannexure\s+h\b/i.test(text)) return DOCUMENT_TEMPLATES.annexureH;
+  if (/\bfamily history questionnaire\b/i.test(text)) return DOCUMENT_TEMPLATES.familyHistory;
+  if (/\bpolice\b/i.test(text)) return DOCUMENT_TEMPLATES.police;
+  if (/\baffidavit\b/i.test(text)) return DOCUMENT_TEMPLATES.affidavit;
+  return null;
+}
+
+function appendAllDocumentsGroup(lines, rows) {
+  lines.push("", "Document checklist");
+  if (!rows.length) {
     lines.push("- None");
     return;
   }
-  for (const [group, items] of groupRows(noted)) {
+  for (const [group, items] of groupRows(rows)) {
     lines.push(`${group}:`);
     for (const item of items) {
-      lines.push(`- ${formatDocumentLine(item, { includeNotes: true, includeProvider: true })}`);
+      lines.push(`- ${formatDocumentLine(item, { includeNotes: true, includeStatus: true })}`);
     }
   }
 }
 
 function formatDocumentLine(item, options = {}) {
   const parts = [item.title];
-  const provider = item.record.provider || item.defaultProvider;
-  if (options.includeProvider !== false && provider) parts.push(`provider: ${provider}`);
+  if (options.includeStatus) parts.push(`status: ${item.record.status}`);
   if (options.includeNotes && item.record.notes) parts.push(`notes: ${item.record.notes}`);
   return parts.join(" | ");
 }
@@ -1087,8 +1163,7 @@ function witnessLines(caseData) {
   const captured = caseData.witnesses.filter(hasWitnessDetails);
   if (!captured.length) return ["- Witnesses missing"];
   return captured.map((witness, index) => {
-    const linked = caseData.beneficiaries.find((person) => person.id === witness.linkedBeneficiaryId);
-    return `- ${index + 1}. ${witness.name || "Unnamed witness"} | ID: ${witness.idNumber || "Not captured"} | Relationship: ${witness.relationshipToDeceased || "Not captured"} | Supports: ${linked?.name || "Unlinked"}`;
+    return `- ${index + 1}. ${witness.name || "Unnamed witness"} | ID: ${witness.idNumber || "Not captured"} | Relationship: ${witness.relationshipToDeceased || "Not captured"}`;
   });
 }
 
@@ -1096,9 +1171,11 @@ function scenarioLines(scenarios = {}) {
   const values = { ...defaultScenarios(), ...scenarios };
   return [
     `- Marriage status: ${values.marriageStatus}`,
-    values.marriageStatus === "Divorced" ? `- Maintenance was paid: ${values.maintenancePaid}` : null,
+    `- Previously divorced: ${values.previouslyDivorced}`,
+    values.marriageStatus === "Divorced" || values.previouslyDivorced === "Yes" ? `- Maintenance was paid: ${values.maintenancePaid}` : null,
     `- Mother of deceased: ${values.motherStatus}`,
     `- Father of deceased: ${values.fatherStatus}`,
+    `- Death type: ${values.deathType}`,
   ].filter(Boolean);
 }
 
@@ -1119,17 +1196,16 @@ function statusClass(status) {
   return String(status || "Missing").toLowerCase().replace(/[^a-z0-9]+/g, "-");
 }
 
-function getDocumentRecord(records, key, provider = "") {
+function getDocumentRecord(records, key) {
   const record = records?.[key];
   if (record && typeof record === "object" && !Array.isArray(record)) {
     return {
       status: STATUSES.includes(record.status) ? record.status : (record.checked ? "Have" : "Missing"),
       notes: record.notes || "",
-      provider: record.provider || provider || "",
     };
   }
-  if (record === true) return { ...emptyRecord("Have"), provider };
-  return { ...emptyRecord("Missing"), provider };
+  if (record === true) return emptyRecord("Have");
+  return emptyRecord("Missing");
 }
 
 function ageLabel(person) {
@@ -1234,14 +1310,22 @@ function normalizeImportedCase(value) {
     : [newBeneficiary()];
   const witnesses = Array.isArray(base.witnesses) && base.witnesses.length
     ? base.witnesses
-    : [newWitness()];
+    : createWitnessSlots();
+  const witnessSlots = witnesses.length >= MIN_WITNESSES
+    ? witnesses
+    : [...witnesses, ...createWitnessSlots(MIN_WITNESSES - witnesses.length)];
 
   const rawScenarios = base.scenarios && typeof base.scenarios === "object" ? base.scenarios : {};
   const normalizedScenarios = {
     ...defaultScenarios(),
     ...rawScenarios,
-    motherStatus: PARENT_LIFE_STATUSES.includes(rawScenarios.motherStatus) ? rawScenarios.motherStatus : "Unknown",
-    fatherStatus: PARENT_LIFE_STATUSES.includes(rawScenarios.fatherStatus) ? rawScenarios.fatherStatus : "Unknown",
+    marriageStatus: normalizeChoice(rawScenarios.marriageStatus, MARRIAGE_STATUSES),
+    previouslyDivorced: normalizeChoice(rawScenarios.previouslyDivorced, YES_NO_UNKNOWN),
+    maintenancePaid: normalizeChoice(rawScenarios.maintenancePaid, YES_NO_UNKNOWN),
+    parentStatus: normalizeChoice(rawScenarios.parentStatus, PARENT_LIFE_STATUSES),
+    motherStatus: normalizeChoice(rawScenarios.motherStatus, PARENT_LIFE_STATUSES),
+    fatherStatus: normalizeChoice(rawScenarios.fatherStatus, PARENT_LIFE_STATUSES),
+    deathType: normalizeChoice(rawScenarios.deathType, DEATH_TYPES),
   };
 
   const normalized = {
@@ -1261,11 +1345,10 @@ function normalizeImportedCase(value) {
       manualAge: person.manualAge || "",
       relationship: RELATIONSHIPS.includes(person.relationship) ? person.relationship : "Child",
     })),
-    witnesses: witnesses.map((witness) => ({
+    witnesses: witnessSlots.map((witness) => ({
       id: witness.id || uid("witness"),
       name: witness.name || "",
       idNumber: witness.idNumber || "",
-      linkedBeneficiaryId: witness.linkedBeneficiaryId || "",
       relationshipToDeceased: witness.relationshipToDeceased || "",
     })),
     documentRecords: {},
@@ -1273,6 +1356,10 @@ function normalizeImportedCase(value) {
 
   normalized.documentRecords = migrateDocumentRecords(base.documentRecords, base.checked);
   return normalized;
+}
+
+function normalizeChoice(value, options) {
+  return options.includes(value) ? value : CHOOSE_VALUE;
 }
 
 function migrateDocumentRecords(documentRecords, checked) {

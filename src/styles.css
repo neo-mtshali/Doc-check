@@ -261,11 +261,13 @@ button {
 .scenario-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
+  align-items: start;
   gap: 10px;
 }
 
 .field {
   display: grid;
+  align-content: start;
   gap: 6px;
   margin-bottom: 10px;
 }
@@ -680,6 +682,27 @@ button {
 
 .doc-main {
   min-width: 0;
+}
+
+.template-link {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 28px;
+  margin-top: 8px;
+  border: 1px solid #b9e5de;
+  border-radius: 8px;
+  background: #f2fffc;
+  color: var(--navy);
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.template-link:hover {
+  border-color: var(--teal);
+  color: var(--teal);
 }
 
 .doc-row.status-have {

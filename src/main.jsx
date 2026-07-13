@@ -21,6 +21,7 @@ const RELATIONSHIPS = [
 ];
 
 const CHOOSE_VALUE = "Choose";
+const DEPENDENCY_STATUSES = [CHOOSE_VALUE, "Stated dependent", "Stated not dependent"];
 const MARRIAGE_STATUSES = [CHOOSE_VALUE, "Never married", "Married", "Divorced", "Customary/lobola", "Cohabiting"];
 const YES_NO_UNKNOWN = [CHOOSE_VALUE, "Yes", "No"];
 const PARENT_LIFE_STATUSES = [CHOOSE_VALUE, "Alive", "Passed away", "Not involved / not known"];
@@ -124,7 +125,6 @@ const PARENT_ALIVE_DOCS = [
   doc("parent-certified-id", "Parent certified ID", "Certified copy of the parent's ID", "Parent"),
   doc("parent-affidavit", "Parent affidavit", "Affidavit explaining relationship, support and other dependants", "Parent"),
   doc("parent-bank-statement", "3-month bank statement", "Bank statement", "Parent"),
-  doc("parent-dependency-proof", "Proof of financial dependency", "Evidence that the deceased supported the parent", "Parent / family"),
 ];
 
 const PARENT_PASSED_DOCS = [
@@ -193,6 +193,7 @@ function newBeneficiary() {
     idNumber: "",
     manualAge: "",
     relationship: "Child",
+    dependencyStatus: CHOOSE_VALUE,
   };
 }
 
@@ -652,6 +653,9 @@ function BeneficiaryEditor({ person, index, canRemove, onChange, onRemove }) {
           {RELATIONSHIPS.map((relationship) => <option key={relationship}>{relationship}</option>)}
         </SelectField>
       </div>
+      <SelectField label="Dependency statement" value={person.dependencyStatus || CHOOSE_VALUE} onChange={(value) => onChange(person.id, "dependencyStatus", value)}>
+        {DEPENDENCY_STATUSES.map((status) => <option key={status}>{status}</option>)}
+      </SelectField>
       <footer>
         <span>{age == null ? "Age not captured" : `Age ${age}`}</span>
         {canRemove ? <button type="button" className="text-danger" onClick={() => onRemove(person.id)}>Remove</button> : null}
@@ -774,7 +778,7 @@ function buildSections(caseData) {
       key: `beneficiary:${person.id}:${type.key}`,
       title: `${person.name || "Unnamed beneficiary"} - ${type.label}`,
       subtitle: beneficiarySubtitle(person),
-      docs: type.docs,
+      docs: beneficiaryDocs(person, type.docs),
       tone: type.key,
     });
   }
@@ -850,20 +854,34 @@ function parentDeathDocs(key, label, status) {
 }
 
 function parentBeneficiarySections(scenarios) {
+  return generatedParentBeneficiaries(scenarios).map((parent) => ({
+    key: `parent-beneficiary:${parent.familyRole}`,
+    title: `${parent.name} - Parent`,
+    subtitle: "Parent marked alive in family background",
+    docs: parentAliveDocs(parent.familyRole, parent.name),
+    tone: "parent",
+  }));
+}
+
+function generatedParentBeneficiaries(scenarios = {}) {
+  const values = { ...defaultScenarios(), ...scenarios };
   return [
-    parentBeneficiarySection("mother", "Mother", scenarios.motherStatus),
-    parentBeneficiarySection("father", "Father", scenarios.fatherStatus),
+    generatedParentBeneficiary("mother", "Mother", values.motherStatus),
+    generatedParentBeneficiary("father", "Father", values.fatherStatus),
   ].filter(Boolean);
 }
 
-function parentBeneficiarySection(key, label, status) {
+function generatedParentBeneficiary(familyRole, name, status) {
   if (status !== "Alive") return null;
   return {
-    key: `parent-beneficiary:${key}`,
-    title: `${label} - Parent`,
-    subtitle: "Parent marked alive in family background",
-    docs: parentAliveDocs(key, label),
-    tone: "parent",
+    id: `generated-parent-beneficiary:${familyRole}`,
+    name,
+    idNumber: "",
+    manualAge: "",
+    relationship: "Parent",
+    dependencyStatus: CHOOSE_VALUE,
+    familyRole,
+    generated: true,
   };
 }
 
@@ -872,7 +890,6 @@ function parentAliveDocs(key, label) {
     doc(`${key}-parent-certified-id`, `${label} certified ID`, `Certified copy of the deceased member's ${label.toLowerCase()}'s ID`),
     doc(`${key}-parent-affidavit`, `${label} affidavit`, `Affidavit from the deceased member's ${label.toLowerCase()} confirming family background, dependency and other dependants`),
     doc(`${key}-parent-bank-statement`, `${label} 3-month bank statement`, `Bank statement for the deceased member's ${label.toLowerCase()}`),
-    doc(`${key}-parent-dependency-proof`, `${label} proof of financial dependency`, `Evidence that the deceased supported the ${label.toLowerCase()}`),
   ];
 }
 
@@ -927,7 +944,27 @@ function scenarioSubtitle(scenarios) {
 function beneficiarySubtitle(person) {
   const age = getPersonAge(person);
   const idPart = person.idNumber ? `ID ${person.idNumber}` : "ID not captured";
-  return `${idPart} | ${age == null ? "age not captured" : `age ${age}`}`;
+  const dependency = selectedDependencyStatus(person);
+  return [
+    idPart,
+    age == null ? "age not captured" : `age ${age}`,
+    dependency ? `dependency: ${dependency}` : null,
+  ].filter(Boolean).join(" | ");
+}
+
+function selectedDependencyStatus(person) {
+  return person?.dependencyStatus && person.dependencyStatus !== CHOOSE_VALUE
+    ? person.dependencyStatus
+    : "";
+}
+
+function beneficiaryDocs(person, docs) {
+  if (selectedDependencyStatus(person) !== "Stated not dependent") return docs;
+  return docs.filter((item) => !isBankStatementDocument(item));
+}
+
+function isBankStatementDocument(item) {
+  return /\bbank statement\b/i.test(`${item.title} ${item.note}`);
 }
 
 function witnessSubtitle(witness) {
@@ -1005,6 +1042,10 @@ function collectDocumentRows(sections, records) {
 
 function buildFullCaseInfoText(caseData, sections, progress, readiness) {
   const rows = collectDocumentRows(sections, caseData.documentRecords);
+  const beneficiaries = [
+    ...caseData.beneficiaries,
+    ...generatedParentBeneficiaries(caseData.scenarios),
+  ];
   const lines = [
     `Full case information: ${caseData.caseReference || "Case reference not captured"}`,
     `Generated: ${new Date().toLocaleString("en-ZA")}`,
@@ -1020,7 +1061,7 @@ function buildFullCaseInfoText(caseData, sections, progress, readiness) {
     ...scenarioLines(caseData.scenarios),
     "",
     "Beneficiaries and relationships",
-    ...caseData.beneficiaries.flatMap((person, index) => beneficiaryLines(person, index, caseData.scenarios)),
+    ...beneficiaries.flatMap((person, index) => beneficiaryLines(person, index, caseData.scenarios)),
     "",
     "Witnesses",
     ...witnessLines(caseData),
@@ -1153,9 +1194,10 @@ function groupRows(rows) {
 function beneficiaryLines(person, index, scenarios) {
   const type = beneficiaryType(person, { ...defaultScenarios(), ...scenarios });
   const age = getPersonAge(person);
+  const dependency = selectedDependencyStatus(person) || "Not captured";
   return [
     `- ${index + 1}. ${person.name || "Unnamed beneficiary"} (${type.label})`,
-    `  ID: ${person.idNumber || "Not captured"} | Age: ${age == null ? "Not captured" : age}`,
+    `  ID: ${person.idNumber || "Not captured"} | Age: ${age == null ? "Not captured" : age} | Dependency: ${dependency}`,
   ];
 }
 
@@ -1344,6 +1386,7 @@ function normalizeImportedCase(value) {
       idNumber: person.idNumber || "",
       manualAge: person.manualAge || "",
       relationship: RELATIONSHIPS.includes(person.relationship) ? person.relationship : "Child",
+      dependencyStatus: normalizeChoice(person.dependencyStatus, DEPENDENCY_STATUSES),
     })),
     witnesses: witnessSlots.map((witness) => ({
       id: witness.id || uid("witness"),

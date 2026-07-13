@@ -119,13 +119,6 @@
     "keywords": ["sassa", "disability", "medical"]
   },
   {
-    "document": "Proof of financial dependency",
-    "appliesTo": "Any financial dependant",
-    "requirement": "Compulsory",
-    "notes": "Shows the member supported them financially - 3-6 months of records",
-    "keywords": ["dependency", "bank statement", "affidavit", "financial"]
-  },
-  {
     "document": "Proof of residence / cohabitation",
     "appliesTo": "Non-family dependants",
     "requirement": "Compulsory",

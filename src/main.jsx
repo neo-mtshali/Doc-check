@@ -575,6 +575,16 @@ function StatusMetric({ label, value, tone = "" }) {
 }
 
 function SavedCasesPanel({ savedCases, onLoad, onRemove }) {
+  const [searchQuery, setSearchQuery] = useState("");
+  const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
+  const filteredCases = normalizedQuery
+    ? savedCases.filter((item) =>
+        [item.caseReference, item.deceasedName].some((value) =>
+          String(value || "").toLocaleLowerCase().includes(normalizedQuery),
+        ),
+      )
+    : savedCases;
+
   return (
     <section className="panel saved-cases-panel">
       <header>
@@ -582,8 +592,19 @@ function SavedCasesPanel({ savedCases, onLoad, onRemove }) {
         <span className="chip">{savedCases.length}</span>
       </header>
       {savedCases.length ? (
-        <div className="saved-case-list">
-          {savedCases.map((item) => (
+        <>
+          <label className="saved-case-search">
+            <span>Search saved cases</span>
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search case number or member name"
+            />
+          </label>
+          {filteredCases.length ? (
+            <div className="saved-case-list">
+              {filteredCases.map((item) => (
             <article className="saved-case-card" key={item.id}>
               <div className="saved-case-main">
                 <strong>{item.caseReference || "No case reference"}</strong>
@@ -605,8 +626,12 @@ function SavedCasesPanel({ savedCases, onLoad, onRemove }) {
                 <button type="button" className="text-danger" onClick={() => onRemove(item.id)}>Remove</button>
               </footer>
             </article>
-          ))}
-        </div>
+              ))}
+            </div>
+          ) : (
+            <p className="empty-note">No saved cases match “{searchQuery.trim()}”.</p>
+          )}
+        </>
       ) : (
         <p className="empty-note">No cases saved yet. Use Save case after capturing a case reference and checklist progress.</p>
       )}

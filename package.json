@@ -8,6 +8,7 @@
     "vite": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "node app/server.mjs",
+    "test": "node --test src/*.test.js",
     "check": "vite build"
   },
   "dependencies": {

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import { getReviewView, resolveReviewMode } from "./reviewView.js";
 
 const STORAGE_KEY = "caseDocumentChecklist.v1";
 const SAVED_CASES_KEY = "caseDocumentChecklist.savedCases.v1";
@@ -235,6 +236,7 @@ const initialCase = {
 function App() {
   const [caseData, setCaseData] = useState(() => loadSavedCase());
   const [savedCases, setSavedCases] = useState(() => loadSavedCases());
+  const [preferredReviewMode, setPreferredReviewMode] = useState(null);
   const importRef = useRef(null);
 
   useEffect(() => {
@@ -247,8 +249,12 @@ function App() {
 
   const sections = useMemo(() => buildSections(caseData), [caseData]);
   const progress = useMemo(() => getProgress(sections, caseData.documentRecords), [sections, caseData.documentRecords]);
-  const handoff = useMemo(() => buildTracerHandoff(caseData, sections), [caseData, sections]);
   const readiness = useMemo(() => getReadiness(progress), [progress]);
+  const reviewMode = resolveReviewMode(preferredReviewMode, progress.actionable);
+  const reviewView = useMemo(
+    () => getReviewView(sections, caseData.documentRecords, reviewMode),
+    [sections, caseData.documentRecords, reviewMode],
+  );
 
   function updateCase(field, value) {
     setCaseData((current) => ({ ...current, [field]: value }));
@@ -328,6 +334,7 @@ function App() {
   }
 
   function resetCase() {
+    setPreferredReviewMode(null);
     setCaseData({
       ...initialCase,
       scenarios: defaultScenarios(),
@@ -346,6 +353,7 @@ function App() {
   }
 
   function loadSavedCaseEntry(entry) {
+    setPreferredReviewMode(null);
     setCaseData(normalizeImportedCase(entry.caseData));
   }
 
@@ -375,6 +383,7 @@ function App() {
     if (!file) return;
     const text = await file.text();
     const imported = normalizeImportedCase(JSON.parse(text));
+    setPreferredReviewMode(null);
     setCaseData(imported);
     event.target.value = "";
   }
@@ -500,14 +509,47 @@ function App() {
             </div>
           </div>
 
-          <TracerHandoffPanel handoff={handoff} />
+          <div className="review-toolbar">
+            <div>
+              <strong>Review view</strong>
+              <span>Focus on outstanding work or inspect the full checklist.</span>
+            </div>
+            <div className="review-filters" role="group" aria-label="Document checklist view">
+              <button
+                type="button"
+                className={reviewMode === "needs-action" ? "active" : ""}
+                aria-pressed={reviewMode === "needs-action"}
+                onClick={() => setPreferredReviewMode("needs-action")}
+              >
+                Needs action ({reviewView.actionCount})
+              </button>
+              <button
+                type="button"
+                className={reviewMode === "all" ? "active" : ""}
+                aria-pressed={reviewMode === "all"}
+                onClick={() => setPreferredReviewMode("all")}
+              >
+                All documents ({reviewView.totalCount})
+              </button>
+            </div>
+          </div>
 
-          {sections.map((section) => (
+          <TracerHandoffPanel progress={progress} readiness={readiness} />
+
+          {reviewView.actionCount === 0 ? (
+            <div className="review-complete" role="status">
+              <strong>No outstanding items</strong>
+              <span>All documents are marked Have or N/A.</span>
+            </div>
+          ) : null}
+
+          {reviewView.sections.map((section) => (
             <ChecklistSection
               key={section.key}
               section={section}
               records={caseData.documentRecords}
               onChange={updateDocumentRecord}
+              actionMode={reviewMode === "needs-action"}
             />
           ))}
         </section>
@@ -516,29 +558,19 @@ function App() {
   );
 }
 
-function TracerHandoffPanel({ handoff }) {
-  const actionable = [...handoff.missing, ...handoff.unclear].slice(0, 10);
-
+function TracerHandoffPanel({ progress, readiness }) {
   return (
     <section className="handoff-panel">
       <header>
         <div>
           <h2>Tracer Handoff</h2>
-          <p>{handoff.actionableCount ? `${handoff.actionableCount} items need action` : "No actionable document requests right now"}</p>
+          <p>{progress.actionable ? `${progress.actionable} items need action` : "No actionable document requests right now"}</p>
         </div>
       </header>
       <div className="handoff-summary">
-        <SummaryPill label="Have" value={handoff.haveCount} tone="complete" />
-        <SummaryPill label="Missing" value={handoff.missing.length} tone={handoff.missing.length ? "missing" : "complete"} />
-        <SummaryPill label="Unclear" value={handoff.unclear.length} tone={handoff.unclear.length ? "warning" : ""} />
-      </div>
-      <div className="missing-preview">
-        {actionable.length ? actionable.map((item) => (
-          <article key={`${item.key}-${item.record.status}`}>
-            <strong>{item.title}</strong>
-            <span>{item.group} - {item.record.status}</span>
-          </article>
-        )) : <p className="empty-note">Ready to share. Nothing is currently marked missing or unclear.</p>}
+        <SummaryPill label="Missing" value={progress.missing} tone={progress.missing ? "missing" : "complete"} />
+        <SummaryPill label="Unclear" value={progress.unclear} tone={progress.unclear ? "warning" : "complete"} />
+        <SummaryPill label="Readiness" value={readiness} tone={readinessTone(readiness)} />
       </div>
     </section>
   );
@@ -707,7 +739,7 @@ function WitnessEditor({ witness, index, canRemove, onChange, onRemove }) {
   );
 }
 
-function ChecklistSection({ section, records, onChange }) {
+function ChecklistSection({ section, records, onChange, actionMode = false }) {
   const sectionRows = section.docs.map((item) => {
     const key = docKey(section.key, item.id);
     return { item, key, record: getDocumentRecord(records, key) };
@@ -724,8 +756,8 @@ function ChecklistSection({ section, records, onChange }) {
           {section.subtitle ? <p>{section.subtitle}</p> : null}
         </div>
         <div className="section-progress">
-          <strong>{done} / {applicable.length}</strong>
-          <ProgressBar percent={percent} />
+          <strong>{actionMode ? `${sectionRows.length} need action` : `${done} / ${applicable.length}`}</strong>
+          {actionMode ? null : <ProgressBar percent={percent} />}
         </div>
       </header>
       <div className="doc-list">
@@ -1032,21 +1064,6 @@ function readinessTone(readiness) {
   if (readiness === "Ready for follow-up") return "warning";
   if (readiness === "Ready for trustee pack") return "complete";
   return "";
-}
-
-function buildTracerHandoff(caseData, sections) {
-  const rows = collectDocumentRows(sections, caseData.documentRecords);
-  const have = rows.filter((row) => row.record.status === "Have");
-  const missing = rows.filter((row) => row.record.status === "Missing");
-  const unclear = rows.filter((row) => row.record.status === "Received but unclear");
-
-  return {
-    have,
-    missing,
-    unclear,
-    haveCount: have.length,
-    actionableCount: missing.length + unclear.length,
-  };
 }
 
 function collectDocumentRows(sections, records) {

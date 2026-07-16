@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { getReviewView, resolveReviewMode } from "./reviewView.js";
+import { getNextActionMenuState } from "./actionMenu.js";
 
 const STORAGE_KEY = "caseDocumentChecklist.v1";
 const SAVED_CASES_KEY = "caseDocumentChecklist.savedCases.v1";
@@ -237,7 +238,11 @@ function App() {
   const [caseData, setCaseData] = useState(() => loadSavedCase());
   const [savedCases, setSavedCases] = useState(() => loadSavedCases());
   const [preferredReviewMode, setPreferredReviewMode] = useState(null);
+  const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const importRef = useRef(null);
+  const actionMenuRef = useRef(null);
+  const actionMenuButtonRef = useRef(null);
+  const actionMenuPanelRef = useRef(null);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(caseData));
@@ -246,6 +251,29 @@ function App() {
   useEffect(() => {
     localStorage.setItem(SAVED_CASES_KEY, JSON.stringify(savedCases));
   }, [savedCases]);
+
+  useEffect(() => {
+    if (!actionMenuOpen) return undefined;
+
+    actionMenuPanelRef.current?.querySelector('[role="menuitem"]')?.focus();
+
+    const handleKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      setActionMenuOpen((current) => getNextActionMenuState(current, "escape"));
+      actionMenuButtonRef.current?.focus();
+    };
+    const handlePointerDown = (event) => {
+      if (actionMenuRef.current?.contains(event.target)) return;
+      setActionMenuOpen((current) => getNextActionMenuState(current, "outside"));
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [actionMenuOpen]);
 
   const sections = useMemo(() => buildSections(caseData), [caseData]);
   const progress = useMemo(() => getProgress(sections, caseData.documentRecords), [sections, caseData.documentRecords]);
@@ -397,26 +425,83 @@ function App() {
           <p>Tracer handoff workbench for missing, received and unclear documents</p>
         </div>
         <div className="top-actions">
-          <button type="button" className="secondary-btn" onClick={() => importRef.current?.click()}>Import</button>
-          <input ref={importRef} type="file" accept="application/json" hidden onChange={importCase} />
-          <button type="button" className="secondary-btn" onClick={saveCurrentCase}>Save case</button>
-          <button type="button" className="secondary-btn" onClick={exportFullCaseInfo}>Export full case info</button>
-          <button type="button" className="secondary-btn" onClick={exportMissingDocuments}>Export missing docs</button>
+          <button type="button" className="primary-btn" onClick={saveCurrentCase}>Save case</button>
           <button type="button" className="secondary-btn" onClick={copyWhatsAppMessage}>Copy WhatsApp message</button>
-          <button type="button" className="danger-btn" onClick={resetCase}>New / Reset</button>
+          <div className="action-menu" ref={actionMenuRef}>
+            <button
+              ref={actionMenuButtonRef}
+              type="button"
+              className="secondary-btn menu-trigger"
+              aria-haspopup="menu"
+              aria-expanded={actionMenuOpen}
+              onClick={() => setActionMenuOpen((current) => getNextActionMenuState(current, "toggle"))}
+            >
+              More actions <span aria-hidden="true">▾</span>
+            </button>
+            {actionMenuOpen ? (
+              <div
+                ref={actionMenuPanelRef}
+                className="action-menu-panel"
+                role="menu"
+                aria-label="Case actions"
+                onKeyDown={(event) => {
+                  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+                  event.preventDefault();
+                  const items = [...event.currentTarget.querySelectorAll('[role="menuitem"]')];
+                  const currentIndex = items.indexOf(document.activeElement);
+                  const nextIndex = event.key === 'Home'
+                    ? 0
+                    : event.key === 'End'
+                      ? items.length - 1
+                      : event.key === 'ArrowDown'
+                        ? (currentIndex + 1) % items.length
+                        : (currentIndex - 1 + items.length) % items.length;
+                  items[nextIndex]?.focus();
+                }}
+              >
+                <button type="button" role="menuitem" onClick={() => {
+                  setActionMenuOpen((current) => getNextActionMenuState(current, "select"));
+                  importRef.current?.click();
+                }}>Import case</button>
+                <button type="button" role="menuitem" onClick={() => {
+                  setActionMenuOpen((current) => getNextActionMenuState(current, "select"));
+                  exportFullCaseInfo();
+                }}>Export full case info</button>
+                <button type="button" role="menuitem" onClick={() => {
+                  setActionMenuOpen((current) => getNextActionMenuState(current, "select"));
+                  exportMissingDocuments();
+                }}>Export missing documents</button>
+                <div className="action-menu-separator" aria-hidden="true" />
+                <button type="button" role="menuitem" className="destructive" onClick={() => {
+                  setActionMenuOpen((current) => getNextActionMenuState(current, "select"));
+                  resetCase();
+                }}>New / Reset case</button>
+              </div>
+            ) : null}
+          </div>
+          <input ref={importRef} type="file" accept="application/json" hidden onChange={importCase} />
         </div>
       </header>
 
-      <section className="status-strip">
-        <StatusMetric label="Case reference" value={caseData.caseReference || "Not captured"} />
-        <StatusMetric label="Readiness" value={readiness} tone={readinessTone(readiness)} />
-        <StatusMetric label="Have / applicable" value={`${progress.have} / ${progress.applicable}`} />
-        <div className="overall-progress">
-          <span>Overall completion</span>
-          <strong>{progress.percent}%</strong>
-          <ProgressBar percent={progress.percent} />
+      <section className="case-summary" aria-label="Case progress summary">
+        <div className="case-summary-primary">
+          <div className="readiness-summary">
+            <span>Readiness</span>
+            <strong className={readinessTone(readiness)}>{readiness}</strong>
+          </div>
+          <div className="completion-summary">
+            <div>
+              <span>Overall completion</span>
+              <strong>{progress.percent}%</strong>
+            </div>
+            <ProgressBar percent={progress.percent} />
+          </div>
         </div>
-        <StatusMetric label="Tracer action" value={progress.actionable} tone={progress.actionable ? "missing" : "complete"} />
+        <div className="case-summary-stats">
+          <StatusMetric label="Case reference" value={caseData.caseReference || "Not captured"} />
+          <StatusMetric label="Have / applicable" value={`${progress.have} / ${progress.applicable}`} />
+          <StatusMetric label="Needs action" value={progress.actionable} tone={progress.actionable ? "missing" : "complete"} />
+        </div>
       </section>
 
       <div className="workbench">

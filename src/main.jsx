@@ -3,6 +3,17 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { getReviewView, resolveReviewMode } from "./reviewView.js";
 import { getNextActionMenuState } from "./actionMenu.js";
+import {
+  filterBeneficiaryDocuments,
+  getCaseSaveState,
+  getInitialOpenPanel,
+  getPersonSectionSpecs,
+  getSetupSectionStates,
+  hasMeaningfulCaseData,
+  hasMissingSpouseBeneficiary,
+  prependBeneficiary,
+  validateCaseReference,
+} from "./workflowState.js";
 
 const STORAGE_KEY = "caseDocumentChecklist.v1";
 const SAVED_CASES_KEY = "caseDocumentChecklist.savedCases.v1";
@@ -239,10 +250,22 @@ function App() {
   const [savedCases, setSavedCases] = useState(() => loadSavedCases());
   const [preferredReviewMode, setPreferredReviewMode] = useState(null);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
+  const [openPanels, setOpenPanels] = useState(() => new Set([getInitialOpenPanel(caseData, savedCases)]));
+  const [referenceError, setReferenceError] = useState("");
+  const [feedback, setFeedback] = useState(null);
+  const [confirmation, setConfirmation] = useState(null);
+  const [hasInteracted, setHasInteracted] = useState(false);
+  const restoredDraft = useRef(hasMeaningfulCaseData(caseData));
   const importRef = useRef(null);
   const actionMenuRef = useRef(null);
   const actionMenuButtonRef = useRef(null);
   const actionMenuPanelRef = useRef(null);
+  const caseReferenceRef = useRef(null);
+  const confirmationButtonRef = useRef(null);
+  const confirmationReturnFocusRef = useRef(null);
+  const feedbackTimerRef = useRef(null);
+  const newBeneficiaryNameRef = useRef(null);
+  const pendingNewBeneficiaryIdRef = useRef(null);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(caseData));
@@ -251,6 +274,28 @@ function App() {
   useEffect(() => {
     localStorage.setItem(SAVED_CASES_KEY, JSON.stringify(savedCases));
   }, [savedCases]);
+
+  useEffect(() => {
+    if (!pendingNewBeneficiaryIdRef.current || !newBeneficiaryNameRef.current) return;
+    newBeneficiaryNameRef.current.focus();
+    pendingNewBeneficiaryIdRef.current = null;
+  }, [caseData.beneficiaries]);
+
+  useEffect(() => () => {
+    if (feedbackTimerRef.current) window.clearTimeout(feedbackTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (!confirmation) return undefined;
+    confirmationButtonRef.current?.focus();
+    const handleKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeConfirmation();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [confirmation]);
 
   useEffect(() => {
     if (!actionMenuOpen) return undefined;
@@ -283,12 +328,65 @@ function App() {
     () => getReviewView(sections, caseData.documentRecords, reviewMode),
     [sections, caseData.documentRecords, reviewMode],
   );
+  const setupSections = useMemo(() => getSetupSectionStates(caseData), [caseData]);
+  const setupById = useMemo(
+    () => Object.fromEntries(setupSections.map((section) => [section.id, section])),
+    [setupSections],
+  );
+  const caseSaveState = useMemo(() => getCaseSaveState(caseData, savedCases), [caseData, savedCases]);
+  const meaningfulDraft = useMemo(() => hasMeaningfulCaseData(caseData), [caseData]);
+  const draftLabel = !meaningfulDraft
+    ? "Draft saved locally"
+    : caseSaveState === "saved"
+      ? "Saved"
+      : restoredDraft.current && !hasInteracted
+        ? "Draft restored"
+        : "Changes not saved to case list";
+  const missingSpouse = hasMissingSpouseBeneficiary(caseData);
+
+  function announce(message, tone = "success", dismiss = tone !== "error") {
+    if (feedbackTimerRef.current) window.clearTimeout(feedbackTimerRef.current);
+    setFeedback({ message, tone });
+    if (dismiss) {
+      feedbackTimerRef.current = window.setTimeout(() => setFeedback(null), 4000);
+    }
+  }
+
+  function markChanged() {
+    setHasInteracted(true);
+  }
+
+  function togglePanel(id) {
+    setOpenPanels((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function openPanel(id) {
+    setOpenPanels((current) => new Set([...current, id]));
+  }
 
   function updateCase(field, value) {
+    markChanged();
+    if (field === "caseReference") {
+      if (value.trim()) {
+        setReferenceError("");
+        if (referenceError) setFeedback(null);
+        setOpenPanels((current) => {
+          const next = new Set(current);
+          next.delete("saved-cases");
+          return next;
+        });
+      }
+    }
     setCaseData((current) => ({ ...current, [field]: value }));
   }
 
   function updateDeceased(field, value) {
+    markChanged();
     setCaseData((current) => ({
       ...current,
       deceased: { ...current.deceased, [field]: value },
@@ -296,6 +394,7 @@ function App() {
   }
 
   function updateScenario(field, value) {
+    markChanged();
     setCaseData((current) => ({
       ...current,
       scenarios: { ...defaultScenarios(), ...current.scenarios, [field]: value },
@@ -303,6 +402,7 @@ function App() {
   }
 
   function updateBeneficiary(id, field, value) {
+    markChanged();
     setCaseData((current) => ({
       ...current,
       beneficiaries: current.beneficiaries.map((person) =>
@@ -312,6 +412,7 @@ function App() {
   }
 
   function updateWitness(id, field, value) {
+    markChanged();
     setCaseData((current) => ({
       ...current,
       witnesses: current.witnesses.map((witness) =>
@@ -321,13 +422,18 @@ function App() {
   }
 
   function addBeneficiary() {
+    const beneficiary = newBeneficiary();
+    markChanged();
+    openPanel("beneficiaries");
+    pendingNewBeneficiaryIdRef.current = beneficiary.id;
     setCaseData((current) => ({
       ...current,
-      beneficiaries: [...current.beneficiaries, newBeneficiary()],
+      beneficiaries: prependBeneficiary(current.beneficiaries, beneficiary),
     }));
   }
 
   function removeBeneficiary(id) {
+    markChanged();
     setCaseData((current) => ({
       ...current,
       beneficiaries: current.beneficiaries.filter((person) => person.id !== id),
@@ -335,6 +441,8 @@ function App() {
   }
 
   function addWitness() {
+    markChanged();
+    openPanel("witnesses");
     setCaseData((current) => ({
       ...current,
       witnesses: [...current.witnesses, newWitness()],
@@ -342,6 +450,7 @@ function App() {
   }
 
   function removeWitness(id) {
+    markChanged();
     setCaseData((current) => ({
       ...current,
       witnesses: current.witnesses.filter((witness) => witness.id !== id),
@@ -349,6 +458,7 @@ function App() {
   }
 
   function updateDocumentRecord(key, patch) {
+    markChanged();
     setCaseData((current) => {
       const currentRecord = getDocumentRecord(current.documentRecords, key);
       return {
@@ -361,32 +471,80 @@ function App() {
     });
   }
 
-  function resetCase() {
+  function performResetCase() {
     setPreferredReviewMode(null);
-    setCaseData({
+    const nextCase = {
       ...initialCase,
       scenarios: defaultScenarios(),
       beneficiaries: [newBeneficiary()],
       witnesses: createWitnessSlots(),
       documentRecords: {},
-    });
+    };
+    setCaseData(nextCase);
+    setReferenceError("");
+    setHasInteracted(false);
+    setOpenPanels(new Set([savedCases.length ? "saved-cases" : "case-setup"]));
+    announce("A new local draft is ready.");
+  }
+
+  function requestConfirmation(details, returnFocus = document.activeElement) {
+    confirmationReturnFocusRef.current = returnFocus;
+    setConfirmation(details);
+  }
+
+  function closeConfirmation() {
+    setConfirmation(null);
+    window.requestAnimationFrame(() => confirmationReturnFocusRef.current?.focus());
+  }
+
+  function confirmResetCase() {
+    requestConfirmation({
+      title: "Reset this case?",
+      message: "This clears the current draft. Cases already listed under Saved Cases will remain available.",
+      confirmLabel: "Reset case",
+      onConfirm: performResetCase,
+    }, actionMenuButtonRef.current);
   }
 
   function saveCurrentCase() {
+    const error = validateCaseReference(caseData.caseReference);
+    if (error) {
+      setReferenceError(error);
+      openPanel("case-setup");
+      announce(error, "error", false);
+      window.requestAnimationFrame(() => caseReferenceRef.current?.focus());
+      return;
+    }
     const entry = buildSavedCaseEntry(caseData, progress, readiness);
     setSavedCases((current) => {
       const withoutCurrent = current.filter((item) => item.id !== entry.id);
       return [entry, ...withoutCurrent].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
     });
+    setReferenceError("");
+    setHasInteracted(false);
+    announce(`Case ${entry.caseReference} saved.`);
   }
 
   function loadSavedCaseEntry(entry) {
+    const imported = normalizeImportedCase(entry.caseData);
     setPreferredReviewMode(null);
-    setCaseData(normalizeImportedCase(entry.caseData));
+    setCaseData(imported);
+    setReferenceError("");
+    setHasInteracted(false);
+    setOpenPanels(new Set([getInitialOpenPanel(imported, savedCases)]));
+    announce(`Case ${entry.caseReference || "record"} loaded.`);
   }
 
-  function removeSavedCase(id) {
-    setSavedCases((current) => current.filter((item) => item.id !== id));
+  function confirmRemoveSavedCase(entry) {
+    requestConfirmation({
+      title: `Remove ${entry.caseReference || "this saved case"}?`,
+      message: "This removes the saved snapshot. The current draft will not be changed.",
+      confirmLabel: "Remove saved case",
+      onConfirm: () => {
+        setSavedCases((current) => current.filter((item) => item.id !== entry.id));
+        announce(`Saved case ${entry.caseReference || "record"} removed.`);
+      },
+    });
   }
 
   function exportFullCaseInfo() {
@@ -403,17 +561,32 @@ function App() {
 
   async function copyWhatsAppMessage() {
     const requestText = buildWhatsAppRequestText(caseData, sections);
-    await navigator.clipboard?.writeText(requestText);
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(requestText);
+      announce("WhatsApp message copied.");
+    } catch {
+      announce("Could not copy the WhatsApp message. Try again.", "error", false);
+    }
   }
 
   async function importCase(event) {
     const file = event.target.files?.[0];
     if (!file) return;
-    const text = await file.text();
-    const imported = normalizeImportedCase(JSON.parse(text));
-    setPreferredReviewMode(null);
-    setCaseData(imported);
-    event.target.value = "";
+    try {
+      const text = await file.text();
+      const imported = normalizeImportedCase(JSON.parse(text));
+      setPreferredReviewMode(null);
+      setCaseData(imported);
+      setReferenceError("");
+      setHasInteracted(true);
+      setOpenPanels(new Set([getInitialOpenPanel(imported, savedCases)]));
+      announce(`Imported ${imported.caseReference || "case draft"}.`);
+    } catch {
+      announce("Could not import that file. Choose a valid Doc-Check JSON file.", "error", false);
+    } finally {
+      event.target.value = "";
+    }
   }
 
   return (
@@ -423,6 +596,7 @@ function App() {
         <div>
           <h1>Case Document Progress Checklist</h1>
           <p>Tracer handoff workbench for missing, received and unclear documents</p>
+          <span className={`draft-state ${caseSaveState}`}>{draftLabel}</span>
         </div>
         <div className="top-actions">
           <button type="button" className="primary-btn" onClick={saveCurrentCase}>Save case</button>
@@ -474,7 +648,7 @@ function App() {
                 <div className="action-menu-separator" aria-hidden="true" />
                 <button type="button" role="menuitem" className="destructive" onClick={() => {
                   setActionMenuOpen((current) => getNextActionMenuState(current, "select"));
-                  resetCase();
+                  confirmResetCase();
                 }}>New / Reset case</button>
               </div>
             ) : null}
@@ -482,6 +656,16 @@ function App() {
           <input ref={importRef} type="file" accept="application/json" hidden onChange={importCase} />
         </div>
       </header>
+
+      {feedback ? (
+        <div
+          className={`app-feedback ${feedback.tone}`}
+          role={feedback.tone === "error" ? "alert" : "status"}
+          aria-live={feedback.tone === "error" ? "assertive" : "polite"}
+        >
+          {feedback.message}
+        </div>
+      ) : null}
 
       <section className="case-summary" aria-label="Case progress summary">
         <div className="case-summary-primary">
@@ -506,22 +690,58 @@ function App() {
 
       <div className="workbench">
         <aside className="setup-panel">
-          <Panel title="Case Setup">
-            <Field label="Case reference number" required value={caseData.caseReference} onChange={(value) => updateCase("caseReference", value)} placeholder="e.g. PSSPF-000000" />
-          </Panel>
+          <AccordionPanel
+            id="case-setup"
+            title="Case Setup"
+            summary={setupById["case-setup"].summary}
+            complete={setupById["case-setup"].complete}
+            open={openPanels.has("case-setup")}
+            onToggle={togglePanel}
+          >
+            <Field
+              id="case-reference-input"
+              inputRef={caseReferenceRef}
+              label="Case reference number"
+              required
+              value={caseData.caseReference}
+              onChange={(value) => updateCase("caseReference", value)}
+              placeholder="e.g. PSSPF-000000"
+              error={referenceError}
+            />
+          </AccordionPanel>
 
-          <SavedCasesPanel savedCases={savedCases} onLoad={loadSavedCaseEntry} onRemove={removeSavedCase} />
+          <SavedCasesPanel
+            savedCases={savedCases}
+            onLoad={loadSavedCaseEntry}
+            onRemove={confirmRemoveSavedCase}
+            open={openPanels.has("saved-cases")}
+            onToggle={togglePanel}
+          />
 
-          <Panel title="Deceased Member">
+          <AccordionPanel
+            id="deceased"
+            title="Deceased Member"
+            summary={setupById.deceased.summary}
+            complete={setupById.deceased.complete}
+            open={openPanels.has("deceased")}
+            onToggle={togglePanel}
+          >
             <div className="form-grid">
               <Field label="Full names" value={caseData.deceased.fullName} onChange={(value) => updateDeceased("fullName", value)} placeholder="Deceased member name" />
               <Field label="ID number" value={caseData.deceased.idNumber} onChange={(value) => updateDeceased("idNumber", value)} placeholder="13-digit SA ID" hint={ageLabel(caseData.deceased)} />
               <Field label="Manual age" value={caseData.deceased.manualAge} onChange={(value) => updateDeceased("manualAge", value)} placeholder="If ID is unavailable" />
               <Field label="Date of death (optional)" value={caseData.deceased.dateOfDeath} onChange={(value) => updateDeceased("dateOfDeath", value)} placeholder="If available" />
             </div>
-          </Panel>
+          </AccordionPanel>
 
-          <Panel title="Family Background">
+          <AccordionPanel
+            id="family-background"
+            title="Family Background"
+            summary={setupById["family-background"].summary}
+            complete={setupById["family-background"].complete}
+            open={openPanels.has("family-background")}
+            onToggle={togglePanel}
+          >
             <div className="scenario-grid">
               <SelectField label="Marriage status" value={caseData.scenarios.marriageStatus} onChange={(value) => updateScenario("marriageStatus", value)}>
                 {MARRIAGE_STATUSES.map((item) => <option key={item}>{item}</option>)}
@@ -544,12 +764,26 @@ function App() {
                 {DEATH_TYPES.map((item) => <option key={item}>{item}</option>)}
               </SelectField>
             </div>
-          </Panel>
+            {caseData.scenarios.motherStatus === "Alive" || caseData.scenarios.fatherStatus === "Alive" ? (
+              <p className="panel-guidance">Alive parent status is informational. Add the parent under Beneficiaries when person-specific documents are needed.</p>
+            ) : null}
+          </AccordionPanel>
 
-          <Panel
+          <AccordionPanel
+            id="beneficiaries"
             title={`Beneficiaries (${caseData.beneficiaries.length})`}
+            summary={setupById.beneficiaries.summary}
+            complete={setupById.beneficiaries.complete}
+            open={openPanels.has("beneficiaries")}
+            onToggle={togglePanel}
             action={<button className="small-btn" type="button" onClick={addBeneficiary}>Add beneficiary</button>}
           >
+            {missingSpouse ? (
+              <div className="workflow-prompt" role="status">
+                <strong>Add the spouse as a beneficiary</strong>
+                <span>Marriage status no longer creates an anonymous document section. Add the named spouse here when their documents are required.</span>
+              </div>
+            ) : null}
             <div className="person-stack">
               {caseData.beneficiaries.map((person, index) => (
                 <BeneficiaryEditor
@@ -557,15 +791,21 @@ function App() {
                   index={index}
                   person={person}
                   canRemove={caseData.beneficiaries.length > 1}
+                  inputRef={pendingNewBeneficiaryIdRef.current === person.id ? newBeneficiaryNameRef : undefined}
                   onChange={updateBeneficiary}
                   onRemove={removeBeneficiary}
                 />
               ))}
             </div>
-          </Panel>
+          </AccordionPanel>
 
-          <Panel
+          <AccordionPanel
+            id="witnesses"
             title={`Witnesses (${caseData.witnesses.length})`}
+            summary={setupById.witnesses.summary}
+            complete={setupById.witnesses.complete}
+            open={openPanels.has("witnesses")}
+            onToggle={togglePanel}
             action={<button className="small-btn" type="button" onClick={addWitness}>Add witness</button>}
           >
             <div className="person-stack">
@@ -580,7 +820,7 @@ function App() {
                 />
               ))}
             </div>
-          </Panel>
+          </AccordionPanel>
         </aside>
 
         <section className="checklist-panel">
@@ -639,6 +879,38 @@ function App() {
           ))}
         </section>
       </div>
+
+      {confirmation ? (
+        <div className="dialog-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) closeConfirmation();
+        }}>
+          <section
+            className="confirm-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="confirm-dialog-title"
+            aria-describedby="confirm-dialog-message"
+          >
+            <span className="dialog-kicker">Confirm action</span>
+            <h2 id="confirm-dialog-title">{confirmation.title}</h2>
+            <p id="confirm-dialog-message">{confirmation.message}</p>
+            <div className="dialog-actions">
+              <button type="button" className="secondary-btn" onClick={closeConfirmation}>Cancel</button>
+              <button
+                ref={confirmationButtonRef}
+                type="button"
+                className="danger-btn"
+                onClick={() => {
+                  confirmation.onConfirm();
+                  closeConfirmation();
+                }}
+              >
+                {confirmation.confirmLabel}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }
@@ -670,14 +942,38 @@ function SummaryPill({ label, value, tone = "" }) {
   );
 }
 
-function Panel({ title, action, children }) {
+function AccordionPanel({ id, title, summary, complete, open, onToggle, action, children, statusLabel }) {
+  const triggerId = `${id}-trigger`;
+  const contentId = `${id}-content`;
   return (
-    <section className="panel">
-      <header>
-        <h2>{title}</h2>
+    <section className={`panel accordion-panel ${open ? "open" : "collapsed"}`}>
+      <header className="accordion-heading">
+        <h2>
+          <button
+            id={triggerId}
+            type="button"
+            className="accordion-trigger"
+            aria-expanded={open}
+            aria-controls={contentId}
+            onClick={() => onToggle(id)}
+          >
+            <span className="accordion-copy">
+              <span className="accordion-title">{title}</span>
+              <small>{summary}</small>
+            </span>
+            <span className={`completion-badge ${complete ? "complete" : "incomplete"}`}>
+              {statusLabel || (complete ? "Complete" : "Needs details")}
+            </span>
+            <span className="accordion-chevron" aria-hidden="true">⌄</span>
+          </button>
+        </h2>
         {action}
       </header>
-      {children}
+      {open ? (
+        <div id={contentId} className="accordion-content" role="region" aria-labelledby={triggerId}>
+          {children}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -691,7 +987,7 @@ function StatusMetric({ label, value, tone = "" }) {
   );
 }
 
-function SavedCasesPanel({ savedCases, onLoad, onRemove }) {
+function SavedCasesPanel({ savedCases, onLoad, onRemove, open, onToggle }) {
   const [searchQuery, setSearchQuery] = useState("");
   const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
   const filteredCases = normalizedQuery
@@ -703,11 +999,16 @@ function SavedCasesPanel({ savedCases, onLoad, onRemove }) {
     : savedCases;
 
   return (
-    <section className="panel saved-cases-panel">
-      <header>
-        <h2>Saved Cases</h2>
-        <span className="chip">{savedCases.length}</span>
-      </header>
+    <AccordionPanel
+      id="saved-cases"
+      title="Saved Cases"
+      summary={savedCases.length ? `${savedCases.length} saved ${savedCases.length === 1 ? "case" : "cases"}` : "No saved cases"}
+      complete={savedCases.length > 0}
+      statusLabel={String(savedCases.length)}
+      open={open}
+      onToggle={onToggle}
+    >
+      <div className="saved-cases-panel">
       {savedCases.length ? (
         <>
           <label className="saved-case-search">
@@ -740,7 +1041,7 @@ function SavedCasesPanel({ savedCases, onLoad, onRemove }) {
               </div>
               <footer>
                 <button type="button" className="small-btn" onClick={() => onLoad(item)}>Load</button>
-                <button type="button" className="text-danger" onClick={() => onRemove(item.id)}>Remove</button>
+                <button type="button" className="text-danger" onClick={() => onRemove(item)}>Remove</button>
               </footer>
             </article>
               ))}
@@ -752,16 +1053,27 @@ function SavedCasesPanel({ savedCases, onLoad, onRemove }) {
       ) : (
         <p className="empty-note">No cases saved yet. Use Save case after capturing a case reference and checklist progress.</p>
       )}
-    </section>
+      </div>
+    </AccordionPanel>
   );
 }
 
-function Field({ label, value, onChange, placeholder, required, hint }) {
+function Field({ id, inputRef, label, value, onChange, placeholder, required, hint, error }) {
+  const errorId = error && id ? `${id}-error` : undefined;
   return (
     <label className="field">
       <span>{label}{required ? <b> *</b> : null}</span>
-      <input value={value || ""} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />
+      <input
+        id={id}
+        ref={inputRef}
+        value={value || ""}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        aria-invalid={Boolean(error)}
+        aria-describedby={errorId}
+      />
       {hint ? <small>{hint}</small> : null}
+      {error ? <small id={errorId} className="field-error">{error}</small> : null}
     </label>
   );
 }
@@ -777,7 +1089,7 @@ function SelectField({ label, value, onChange, children }) {
   );
 }
 
-function BeneficiaryEditor({ person, index, canRemove, onChange, onRemove }) {
+function BeneficiaryEditor({ person, index, canRemove, inputRef, onChange, onRemove }) {
   const age = getPersonAge(person);
   const type = beneficiaryType(person, defaultScenarios());
 
@@ -787,7 +1099,7 @@ function BeneficiaryEditor({ person, index, canRemove, onChange, onRemove }) {
         <strong>Beneficiary {index + 1}</strong>
         <span className="chip">{type.label}</span>
       </div>
-      <Field label="Name" value={person.name} onChange={(value) => onChange(person.id, "name", value)} placeholder="Beneficiary full name" />
+      <Field inputRef={inputRef} label="Name" value={person.name} onChange={(value) => onChange(person.id, "name", value)} placeholder="Beneficiary full name" />
       <Field label="ID number" value={person.idNumber} onChange={(value) => onChange(person.id, "idNumber", value)} placeholder="13-digit SA ID" hint={ageLabel(person)} />
       <div className="mini-grid">
         <Field label="Manual age" value={person.manualAge} onChange={(value) => onChange(person.id, "manualAge", value)} placeholder="Age" />
@@ -911,22 +1223,15 @@ function buildSections(caseData) {
     });
   }
 
-  const spouse = spouseBeneficiarySection(scenarios);
-  if (spouse) sections.push(spouse);
-
-  for (const person of caseData.beneficiaries) {
+  for (const { person } of getPersonSectionSpecs(caseData)) {
     const type = beneficiaryType(person, scenarios);
     sections.push({
       key: `beneficiary:${person.id}:${type.key}`,
       title: `${person.name || "Unnamed beneficiary"} - ${type.label}`,
       subtitle: beneficiarySubtitle(person),
-      docs: beneficiaryDocs(person, type.docs),
+      docs: filterBeneficiaryDocuments(person, type.docs),
       tone: type.key,
     });
-  }
-
-  for (const parent of parentBeneficiarySections(scenarios)) {
-    sections.push(parent);
   }
 
   for (const [index, witness] of caseData.witnesses.entries()) {
@@ -975,17 +1280,6 @@ function buildScenarioDocs(caseData) {
   return uniqueDocs(docs);
 }
 
-function spouseBeneficiarySection(scenarios) {
-  if (scenarios.marriageStatus !== "Married") return null;
-  return {
-    key: "auto-beneficiary:spouse",
-    title: "Spouse - Spouse",
-    subtitle: "Automatically added because marriage status is Married",
-    docs: SPOUSE_DOCS,
-    tone: "spouse",
-  };
-}
-
 function parentDeathDocs(key, label, status) {
   if (status === "Passed away") {
     return [
@@ -993,46 +1287,6 @@ function parentDeathDocs(key, label, status) {
     ];
   }
   return [];
-}
-
-function parentBeneficiarySections(scenarios) {
-  return generatedParentBeneficiaries(scenarios).map((parent) => ({
-    key: `parent-beneficiary:${parent.familyRole}`,
-    title: `${parent.name} - Parent`,
-    subtitle: "Parent marked alive in family background",
-    docs: parentAliveDocs(parent.familyRole, parent.name),
-    tone: "parent",
-  }));
-}
-
-function generatedParentBeneficiaries(scenarios = {}) {
-  const values = { ...defaultScenarios(), ...scenarios };
-  return [
-    generatedParentBeneficiary("mother", "Mother", values.motherStatus),
-    generatedParentBeneficiary("father", "Father", values.fatherStatus),
-  ].filter(Boolean);
-}
-
-function generatedParentBeneficiary(familyRole, name, status) {
-  if (status !== "Alive") return null;
-  return {
-    id: `generated-parent-beneficiary:${familyRole}`,
-    name,
-    idNumber: "",
-    manualAge: "",
-    relationship: "Parent",
-    dependencyStatus: CHOOSE_VALUE,
-    familyRole,
-    generated: true,
-  };
-}
-
-function parentAliveDocs(key, label) {
-  return [
-    doc(`${key}-parent-certified-id`, `${label} certified ID`, `Certified copy of the deceased member's ${label.toLowerCase()}'s ID`),
-    doc(`${key}-parent-affidavit`, `${label} affidavit`, `Affidavit from the deceased member's ${label.toLowerCase()} confirming family background, dependency and other dependants`),
-    doc(`${key}-parent-bank-statement`, `${label} 3-month bank statement`, `Bank statement for the deceased member's ${label.toLowerCase()}`),
-  ];
 }
 
 function beneficiaryType(person, scenarios) {
@@ -1100,15 +1354,6 @@ function selectedDependencyStatus(person) {
     : "";
 }
 
-function beneficiaryDocs(person, docs) {
-  if (selectedDependencyStatus(person) !== "Stated not dependent") return docs;
-  return docs.filter((item) => !isBankStatementDocument(item));
-}
-
-function isBankStatementDocument(item) {
-  return /\bbank statement\b/i.test(`${item.title} ${item.note}`);
-}
-
 function witnessSubtitle(witness) {
   return witness.relationshipToDeceased || "relationship not captured";
 }
@@ -1169,10 +1414,7 @@ function collectDocumentRows(sections, records) {
 
 function buildFullCaseInfoText(caseData, sections, progress, readiness) {
   const rows = collectDocumentRows(sections, caseData.documentRecords);
-  const beneficiaries = [
-    ...caseData.beneficiaries,
-    ...generatedParentBeneficiaries(caseData.scenarios),
-  ];
+  const beneficiaries = caseData.beneficiaries;
   const lines = [
     `Full case information: ${caseData.caseReference || "Case reference not captured"}`,
     `Generated: ${new Date().toLocaleString("en-ZA")}`,

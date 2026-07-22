@@ -1135,6 +1135,18 @@ a:focus-visible {
   min-width: 0;
 }
 
+.saved-case-transfer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.saved-case-transfer-actions .small-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .saved-case-search {
   position: relative;
   display: block;
@@ -1251,6 +1263,13 @@ a:focus-visible {
   justify-content: space-between;
   gap: 8px;
   align-items: center;
+}
+
+@media (max-width: 460px) {
+  .saved-case-transfer-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
 }
 
 .text-danger {

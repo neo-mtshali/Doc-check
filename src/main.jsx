@@ -14,6 +14,7 @@ import {
 import { getReviewView, resolveReviewMode } from "./reviewView.js";
 import { getNextActionMenuState } from "./actionMenu.js";
 import { buildReportModel } from "./reportView.js";
+import { buildSavedCasesExport, extractSavedCaseCandidates, mergeSavedCases } from "./savedCasesTransfer.js";
 import {
   createEmptyBeneficiaryFinding,
   createEmptyPresenter,
@@ -268,6 +269,7 @@ function App() {
   const [hasInteracted, setHasInteracted] = useState(false);
   const restoredDraft = useRef(hasMeaningfulCaseData(caseData));
   const importRef = useRef(null);
+  const batchImportRef = useRef(null);
   const actionMenuRef = useRef(null);
   const actionMenuButtonRef = useRef(null);
   const actionMenuPanelRef = useRef(null);
@@ -634,6 +636,37 @@ function App() {
     }
   }
 
+  function exportSavedCases() {
+    const payload = buildSavedCasesExport(savedCases);
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const date = new Date().toISOString().slice(0, 10);
+    downloadBlob(blob, `doc-check-saved-cases-${date}.json`);
+    announce(`Exported ${savedCases.length} saved ${savedCases.length === 1 ? "case" : "cases"}.`);
+  }
+
+  async function batchImportCases(event) {
+    const files = [...(event.target.files || [])];
+    if (!files.length) return;
+
+    try {
+      const candidates = [];
+      for (const file of files) {
+        const parsed = JSON.parse(await file.text());
+        candidates.push(...extractSavedCaseCandidates(parsed));
+      }
+      if (!candidates.length) throw new Error("No cases found");
+
+      const imported = candidates.map(normalizeSavedCaseCandidate);
+      setSavedCases((current) => mergeSavedCases(current, imported));
+      setOpenPanels((current) => new Set([...current, "saved-cases"]));
+      announce(`Batch uploaded ${imported.length} ${imported.length === 1 ? "case" : "cases"}.`);
+    } catch {
+      announce("Could not batch upload those files. Choose valid Doc-Check JSON files.", "error", false);
+    } finally {
+      event.target.value = "";
+    }
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -763,9 +796,12 @@ function App() {
             savedCases={savedCases}
             onLoad={loadSavedCaseEntry}
             onRemove={confirmRemoveSavedCase}
+            onExport={exportSavedCases}
+            onBatchUpload={() => batchImportRef.current?.click()}
             open={openPanels.has("saved-cases")}
             onToggle={togglePanel}
           />
+          <input ref={batchImportRef} type="file" accept="application/json,.json" multiple hidden onChange={batchImportCases} />
 
           <AccordionPanel
             id="deceased"
@@ -1513,7 +1549,7 @@ function StatusMetric({ label, value, tone = "" }) {
   );
 }
 
-function SavedCasesPanel({ savedCases, onLoad, onRemove, open, onToggle }) {
+function SavedCasesPanel({ savedCases, onLoad, onRemove, onExport, onBatchUpload, open, onToggle }) {
   const [searchQuery, setSearchQuery] = useState("");
   const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
   const filteredCases = normalizedQuery
@@ -1535,6 +1571,10 @@ function SavedCasesPanel({ savedCases, onLoad, onRemove, open, onToggle }) {
       onToggle={onToggle}
     >
       <div className="saved-cases-panel">
+      <div className="saved-case-transfer-actions">
+        <button type="button" className="small-btn" onClick={onBatchUpload}>Batch upload</button>
+        <button type="button" className="small-btn" onClick={onExport} disabled={!savedCases.length}>Export all saved cases</button>
+      </div>
       {savedCases.length ? (
         <>
           <label className="saved-case-search">
@@ -2201,6 +2241,19 @@ function buildSavedCaseEntry(caseData, progress, readiness) {
     },
     updatedAt: new Date().toISOString(),
     caseData: normalizeImportedCase(caseData),
+  };
+}
+
+function normalizeSavedCaseCandidate(candidate) {
+  const normalizedCase = normalizeImportedCase(candidate.caseData);
+  const sections = buildSections(normalizedCase);
+  const progress = getProgress(sections, normalizedCase.documentRecords);
+  const readiness = getReadiness(progress);
+  const generated = buildSavedCaseEntry(normalizedCase, progress, readiness);
+  return {
+    ...generated,
+    id: candidate.id || generated.id,
+    updatedAt: candidate.updatedAt || generated.updatedAt,
   };
 }
 

@@ -535,11 +535,11 @@ function App() {
 
   function confirmResetCase() {
     requestConfirmation({
-      title: "Reset this case?",
+      title: "Start a new case?",
       message: "This clears the current draft. Cases already listed under Saved Cases will remain available.",
-      confirmLabel: "Reset case",
+      confirmLabel: "New case",
       onConfirm: performResetCase,
-    }, actionMenuButtonRef.current);
+    });
   }
 
   function saveCurrentCase() {
@@ -646,7 +646,7 @@ function App() {
         <div className="top-actions">
           <button type="button" className="primary-btn" onClick={saveCurrentCase}>Save case</button>
           <button type="button" className="secondary-btn" onClick={openPresenter}>Open Presenter</button>
-          <button type="button" className="secondary-btn" onClick={copyWhatsAppMessage}>Copy WhatsApp message</button>
+          <button type="button" className="secondary-btn" onClick={confirmResetCase}>New case</button>
           <div className="action-menu" ref={actionMenuRef}>
             <button
               ref={actionMenuButtonRef}
@@ -689,17 +689,16 @@ function App() {
                 }}>Generate progress report</button>
                 <button type="button" role="menuitem" onClick={() => {
                   setActionMenuOpen((current) => getNextActionMenuState(current, "select"));
+                  copyWhatsAppMessage();
+                }}>Copy WhatsApp message</button>
+                <button type="button" role="menuitem" onClick={() => {
+                  setActionMenuOpen((current) => getNextActionMenuState(current, "select"));
                   exportFullCaseInfo();
                 }}>Export full case info</button>
                 <button type="button" role="menuitem" onClick={() => {
                   setActionMenuOpen((current) => getNextActionMenuState(current, "select"));
                   exportMissingDocuments();
                 }}>Export missing documents</button>
-                <div className="action-menu-separator" aria-hidden="true" />
-                <button type="button" role="menuitem" className="destructive" onClick={() => {
-                  setActionMenuOpen((current) => getNextActionMenuState(current, "select"));
-                  confirmResetCase();
-                }}>New / Reset case</button>
               </div>
             ) : null}
           </div>

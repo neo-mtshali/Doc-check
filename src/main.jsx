@@ -4,6 +4,15 @@ import "./styles.css";
 import { getReviewView, resolveReviewMode } from "./reviewView.js";
 import { getNextActionMenuState } from "./actionMenu.js";
 import {
+  createEmptyBeneficiaryFinding,
+  createEmptyPresenter,
+  DEPENDENCY_FINDINGS,
+  getAllocationSummary,
+  normalizePresenter,
+  removePresenterBeneficiary,
+  resolveAppView,
+} from "./presenterView.js";
+import {
   filterBeneficiaryDocuments,
   getCaseSaveState,
   getInitialOpenPanel,
@@ -243,6 +252,7 @@ const initialCase = {
   beneficiaries: [newBeneficiary()],
   witnesses: createWitnessSlots(),
   documentRecords: {},
+  presenter: createEmptyPresenter(),
 };
 
 function App() {
@@ -274,6 +284,29 @@ function App() {
   useEffect(() => {
     localStorage.setItem(SAVED_CASES_KEY, JSON.stringify(savedCases));
   }, [savedCases]);
+
+  useEffect(() => {
+    const synchronize = (event) => {
+      if (event.storageArea !== localStorage) return;
+      if (event.key === STORAGE_KEY && event.newValue) {
+        try {
+          setCaseData(normalizeImportedCase(JSON.parse(event.newValue)));
+          setHasInteracted(true);
+        } catch {
+          // Ignore malformed data from an unrelated browser tab.
+        }
+      }
+      if (event.key === SAVED_CASES_KEY && event.newValue) {
+        try {
+          setSavedCases(normalizeSavedCases(JSON.parse(event.newValue)));
+        } catch {
+          // Ignore malformed data from an unrelated browser tab.
+        }
+      }
+    };
+    window.addEventListener("storage", synchronize);
+    return () => window.removeEventListener("storage", synchronize);
+  }, []);
 
   useEffect(() => {
     if (!pendingNewBeneficiaryIdRef.current || !newBeneficiaryNameRef.current) return;
@@ -437,6 +470,7 @@ function App() {
     setCaseData((current) => ({
       ...current,
       beneficiaries: current.beneficiaries.filter((person) => person.id !== id),
+      presenter: removePresenterBeneficiary(current.presenter, id),
     }));
   }
 
@@ -479,6 +513,7 @@ function App() {
       beneficiaries: [newBeneficiary()],
       witnesses: createWitnessSlots(),
       documentRecords: {},
+      presenter: createEmptyPresenter(),
     };
     setCaseData(nextCase);
     setReferenceError("");
@@ -570,6 +605,10 @@ function App() {
     }
   }
 
+  function openPresenter() {
+    window.open("/presenter", "_blank", "noopener,noreferrer");
+  }
+
   async function importCase(event) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -600,6 +639,7 @@ function App() {
         </div>
         <div className="top-actions">
           <button type="button" className="primary-btn" onClick={saveCurrentCase}>Save case</button>
+          <button type="button" className="secondary-btn" onClick={openPresenter}>Open Presenter</button>
           <button type="button" className="secondary-btn" onClick={copyWhatsAppMessage}>Copy WhatsApp message</button>
           <div className="action-menu" ref={actionMenuRef}>
             <button
@@ -913,6 +953,288 @@ function App() {
       ) : null}
     </main>
   );
+}
+
+function PresenterApp() {
+  const [caseData, setCaseData] = useState(() => loadSavedCase());
+  const [savedCases, setSavedCases] = useState(() => loadSavedCases());
+  const [feedback, setFeedback] = useState("");
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(caseData));
+  }, [caseData]);
+
+  useEffect(() => {
+    localStorage.setItem(SAVED_CASES_KEY, JSON.stringify(savedCases));
+  }, [savedCases]);
+
+  useEffect(() => {
+    const synchronize = (event) => {
+      if (event.storageArea !== localStorage) return;
+      if (event.key === STORAGE_KEY && event.newValue) {
+        try {
+          setCaseData(normalizeImportedCase(JSON.parse(event.newValue)));
+        } catch {
+          // Ignore malformed data from an unrelated browser tab.
+        }
+      }
+      if (event.key === SAVED_CASES_KEY && event.newValue) {
+        try {
+          setSavedCases(normalizeSavedCases(JSON.parse(event.newValue)));
+        } catch {
+          // Ignore malformed data from an unrelated browser tab.
+        }
+      }
+    };
+    window.addEventListener("storage", synchronize);
+    return () => window.removeEventListener("storage", synchronize);
+  }, []);
+
+  const sections = useMemo(() => buildSections(caseData), [caseData]);
+  const progress = useMemo(() => getProgress(sections, caseData.documentRecords), [sections, caseData.documentRecords]);
+  const readiness = useMemo(() => getReadiness(progress), [progress]);
+  const presenter = useMemo(
+    () => normalizePresenter(caseData.presenter, caseData.beneficiaries),
+    [caseData.presenter, caseData.beneficiaries],
+  );
+  const allocation = useMemo(
+    () => getAllocationSummary(presenter.beneficiaryFindings),
+    [presenter.beneficiaryFindings],
+  );
+  const actionableRows = useMemo(
+    () => collectDocumentRows(sections, caseData.documentRecords)
+      .filter((row) => ["Missing", "Received but unclear"].includes(row.record.status)),
+    [sections, caseData.documentRecords],
+  );
+
+  if (!hasMeaningfulCaseData(caseData)) return <PresenterEmptyState />;
+
+  function updatePresenter(field, value) {
+    setCaseData((current) => ({
+      ...current,
+      presenter: {
+        ...normalizePresenter(current.presenter, current.beneficiaries),
+        [field]: value,
+      },
+    }));
+  }
+
+  function updateBeneficiaryFinding(beneficiaryId, field, value) {
+    setCaseData((current) => {
+      const normalized = normalizePresenter(current.presenter, current.beneficiaries);
+      return {
+        ...current,
+        presenter: {
+          ...normalized,
+          beneficiaryFindings: {
+            ...normalized.beneficiaryFindings,
+            [beneficiaryId]: {
+              ...createEmptyBeneficiaryFinding(),
+              ...normalized.beneficiaryFindings[beneficiaryId],
+              [field]: value,
+            },
+          },
+        },
+      };
+    });
+  }
+
+  function saveCurrentCase() {
+    const error = validateCaseReference(caseData.caseReference);
+    if (error) {
+      setFeedback(error);
+      return;
+    }
+    const entry = buildSavedCaseEntry(caseData, progress, readiness);
+    setSavedCases((current) => [entry, ...current.filter((item) => item.id !== entry.id)]
+      .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)));
+    setFeedback(`Case ${entry.caseReference} saved.`);
+  }
+
+  return (
+    <main className="presenter-shell">
+      <header className="presenter-header">
+        <div className="presenter-brand">
+          <span className="brand-mark" aria-hidden="true">37C</span>
+          <div>
+            <span className="presenter-kicker">Internal presenter notes</span>
+            <h1>{caseData.caseReference || "Case presentation"}</h1>
+            <p>{caseData.deceased.fullName || "Deceased member not captured"}</p>
+            <span className="presenter-private-badge">Private working view</span>
+          </div>
+        </div>
+        <div className="presenter-actions" aria-label="Presenter actions">
+          <a className="secondary-btn" href="/">Back to checklist</a>
+          <button type="button" className="secondary-btn" onClick={() => window.print()}>Print notes</button>
+          <button type="button" className="primary-btn" onClick={saveCurrentCase}>Save case</button>
+        </div>
+      </header>
+
+      {feedback ? <div className="presenter-feedback" role="status">{feedback}</div> : null}
+
+      <section className="presenter-hero" aria-label="Case at a glance">
+        <div>
+          <span>Case readiness</span>
+          <strong className={readinessTone(readiness)}>{readiness}</strong>
+        </div>
+        <div>
+          <span>Document completion</span>
+          <strong>{progress.percent}%</strong>
+          <small>{progress.have} of {progress.applicable} applicable documents received</small>
+        </div>
+        <div>
+          <span>Needs action</span>
+          <strong className={progress.actionable ? "missing" : "complete"}>{progress.actionable}</strong>
+          <small>{progress.missing} missing · {progress.unclear} unclear</small>
+        </div>
+      </section>
+
+      <section className="presenter-section presenter-facts">
+        <div className="presenter-section-heading">
+          <span>01</span>
+          <div><h2>Case at a glance</h2><p>Verified facts already captured in the checklist.</p></div>
+        </div>
+        <dl className="presenter-fact-grid">
+          <PresenterFact label="Case reference" value={caseData.caseReference} />
+          <PresenterFact label="Deceased member" value={caseData.deceased.fullName} />
+          <PresenterFact label="Member ID" value={caseData.deceased.idNumber} />
+          <PresenterFact label="Age" value={presenterAge(caseData.deceased)} />
+          <PresenterFact label="Date of death" value={caseData.deceased.dateOfDeath} />
+          <PresenterFact label="Death type" value={selectedValue(caseData.scenarios.deathType)} />
+          <PresenterFact label="Marriage status" value={selectedValue(caseData.scenarios.marriageStatus)} />
+          <PresenterFact label="Previously divorced" value={selectedValue(caseData.scenarios.previouslyDivorced)} />
+          <PresenterFact label="Mother" value={selectedValue(caseData.scenarios.motherStatus)} />
+          <PresenterFact label="Father" value={selectedValue(caseData.scenarios.fatherStatus)} />
+        </dl>
+      </section>
+
+      <section className="presenter-section">
+        <div className="presenter-section-heading">
+          <span>02</span>
+          <div><h2>Beneficiaries and dependency</h2><p>Capture your working dependency conclusion and the evidence behind it.</p></div>
+        </div>
+        {caseData.beneficiaries.length ? (
+          <div className="presenter-beneficiary-list">
+            {caseData.beneficiaries.map((person, index) => {
+              const finding = presenter.beneficiaryFindings[person.id] || createEmptyBeneficiaryFinding();
+              return (
+                <article className="presenter-beneficiary" key={person.id}>
+                  <header>
+                    <span>{String(index + 1).padStart(2, "0")}</span>
+                    <div>
+                      <h3>{person.name || "Unnamed beneficiary"}</h3>
+                      <p>{beneficiaryType(person, caseData.scenarios).label} · Age {presenterAge(person)} · {selectedDependencyStatus(person) || "Dependency statement not captured"}</p>
+                    </div>
+                  </header>
+                  <div className="presenter-beneficiary-fields">
+                    <label className="presenter-field">
+                      <span>Dependency finding</span>
+                      <select value={finding.dependencyFinding} onChange={(event) => updateBeneficiaryFinding(person.id, "dependencyFinding", event.target.value)}>
+                        {DEPENDENCY_FINDINGS.map((option) => <option key={option}>{option}</option>)}
+                      </select>
+                      <small className="print-value">{finding.dependencyFinding}</small>
+                    </label>
+                    <PresenterInput label="Proposed allocation (%)" value={finding.allocationPercentage} inputMode="decimal" type="number" min="0" max="100" step="0.01" onChange={(value) => updateBeneficiaryFinding(person.id, "allocationPercentage", value)} />
+                    <PresenterInput label="Proposed amount (R)" value={finding.allocationAmount} inputMode="decimal" type="number" min="0" step="0.01" onChange={(value) => updateBeneficiaryFinding(person.id, "allocationAmount", value)} />
+                  </div>
+                  <PresenterTextArea label="Dependency evidence" value={finding.evidenceSummary} onChange={(value) => updateBeneficiaryFinding(person.id, "evidenceSummary", value)} placeholder="Support, household, income, caregiver and interview facts." />
+                  <PresenterTextArea label="Allocation rationale" value={finding.allocationRationale} onChange={(value) => updateBeneficiaryFinding(person.id, "allocationRationale", value)} placeholder="Why this proposed allocation is appropriate." />
+                </article>
+              );
+            })}
+          </div>
+        ) : <p className="presenter-empty-note">No named beneficiaries are captured yet. Return to the checklist to add them.</p>}
+      </section>
+
+      <section className="presenter-section presenter-allocation">
+        <div className="presenter-section-heading">
+          <span>03</span>
+          <div><h2>Proposed allocation</h2><p>Amounts are optional. Percentages remain editable and are checked against 100%.</p></div>
+        </div>
+        <div className="presenter-allocation-summary">
+          <PresenterInput label="Fund benefit amount (R)" value={presenter.fundBenefitAmount} inputMode="decimal" type="number" min="0" step="0.01" onChange={(value) => updatePresenter("fundBenefitAmount", value)} />
+          <div><span>Total proposed percentage</span><strong>{allocation.hasPercentages ? `${allocation.percentageTotal}%` : "Not captured"}</strong></div>
+          <div><span>Total proposed amount</span><strong>{allocation.hasAmounts ? formatZar(allocation.amountTotal) : "Not captured"}</strong></div>
+        </div>
+        {allocation.hasPercentages && !allocation.percentageComplete ? <p className="presenter-allocation-warning" role="status">Percentages currently total {allocation.percentageTotal}%. Confirm or adjust before presenting.</p> : null}
+      </section>
+
+      <section className="presenter-section presenter-notes-grid">
+        <div className="presenter-section-heading">
+          <span>04</span>
+          <div><h2>Analysis, decision points and speaking notes</h2><p>Private working notes saved with the case for quick reference while presenting.</p></div>
+        </div>
+        <div className="presenter-note-grid">
+          <PresenterTextArea label="Investigation and evidence summary" value={presenter.investigationSummary} onChange={(value) => updatePresenter("investigationSummary", value)} placeholder="What the tracer, affidavits, forms and records establish." />
+          <PresenterTextArea label="Important interview answers" value={presenter.interviewHighlights} onChange={(value) => updatePresenter("interviewHighlights", value)} placeholder="Dependency, household, financial support, caregiver and employment highlights." />
+          <PresenterTextArea label="Recommendation" value={presenter.recommendation} onChange={(value) => updatePresenter("recommendation", value)} placeholder="The recommendation to put before the Fund." />
+          <PresenterTextArea label="Risks and contradictions" value={presenter.risksAndContradictions} onChange={(value) => updatePresenter("risksAndContradictions", value)} placeholder="Conflicting evidence, unresolved details or allocation checks." />
+          <PresenterTextArea label="Questions requiring a Fund decision" value={presenter.fundQuestions} onChange={(value) => updatePresenter("fundQuestions", value)} placeholder="Decisions or clarifications needed from the Fund." />
+          <PresenterTextArea label="Final speaking notes" value={presenter.speakingNotes} onChange={(value) => updatePresenter("speakingNotes", value)} placeholder="Your concise closing frame for the presentation." />
+        </div>
+      </section>
+
+      <section className="presenter-section">
+        <div className="presenter-section-heading">
+          <span>05</span>
+          <div><h2>Outstanding documents and review points</h2><p>Generated from the live checklist; not a separate list to maintain.</p></div>
+        </div>
+        {actionableRows.length ? (
+          <div className="presenter-action-list">
+            {actionableRows.map((row) => <article key={row.key} className={statusClass(row.record.status)}>
+              <div><strong>{row.title}</strong><span>{row.group}{row.subtitle ? ` · ${row.subtitle}` : ""}</span></div>
+              <p>{row.record.status}{row.record.notes ? ` — ${row.record.notes}` : ""}</p>
+            </article>)}
+          </div>
+        ) : <p className="presenter-complete-note">No document items are currently marked Missing or Received but unclear.</p>}
+      </section>
+
+      <section className="presenter-section presenter-witnesses">
+        <div className="presenter-section-heading">
+          <span>06</span>
+          <div><h2>Witnesses</h2><p>Captured contacts that can support the Fund discussion.</p></div>
+        </div>
+        <div className="presenter-witness-list">
+          {caseData.witnesses.filter(hasWitnessDetails).length ? caseData.witnesses.filter(hasWitnessDetails).map((witness) => <div key={witness.id}>
+            <strong>{witness.name || "Unnamed witness"}</strong><span>{witness.relationshipToDeceased || "Relationship not captured"}{witness.idNumber ? ` · ID ${witness.idNumber}` : ""}</span>
+          </div>) : <p className="presenter-empty-note">No witness details captured.</p>}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function PresenterEmptyState() {
+  useEffect(() => {
+    const timer = window.setTimeout(() => window.location.replace("/"), 1200);
+    return () => window.clearTimeout(timer);
+  }, []);
+  return <main className="presenter-empty-state"><strong>No active case to present.</strong><span>Returning to the checklist…</span><a href="/">Back to checklist now</a></main>;
+}
+
+function PresenterFact({ label, value }) {
+  return <div><dt>{label}</dt><dd>{value || "Not captured"}</dd></div>;
+}
+
+function PresenterInput({ label, value, onChange, ...inputProps }) {
+  return <label className="presenter-field"><span>{label}</span><input value={value || ""} onChange={(event) => onChange(event.target.value)} {...inputProps} /><small className="print-value">{value || "Not captured"}</small></label>;
+}
+
+function PresenterTextArea({ label, value, onChange, placeholder }) {
+  return <label className="presenter-note"><span>{label}</span><textarea value={value || ""} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} /><small className="print-value">{value || "Not captured"}</small></label>;
+}
+
+function presenterAge(person) {
+  const age = getPersonAge(person);
+  return age == null ? "Not captured" : String(age);
+}
+
+function selectedValue(value) {
+  return value && value !== CHOOSE_VALUE ? value : "Not captured";
+}
+
+function formatZar(value) {
+  return new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR" }).format(value);
 }
 
 function TracerHandoffPanel({ progress, readiness }) {
@@ -1436,9 +1758,40 @@ function buildFullCaseInfoText(caseData, sections, progress, readiness) {
     ...witnessLines(caseData),
   ];
 
+  appendPresenterInformation(lines, caseData.presenter, beneficiaries);
   appendAllDocumentsGroup(lines, rows);
 
   return `${lines.filter(Boolean).join("\n")}\n`;
+}
+
+function appendPresenterInformation(lines, presenter, beneficiaries) {
+  const notes = normalizePresenter(presenter, beneficiaries);
+  const allocation = getAllocationSummary(notes.beneficiaryFindings);
+  const noteSections = [
+    ["Investigation and evidence", notes.investigationSummary],
+    ["Important interview answers", notes.interviewHighlights],
+    ["Recommendation", notes.recommendation],
+    ["Risks and contradictions", notes.risksAndContradictions],
+    ["Questions for the Fund", notes.fundQuestions],
+    ["Speaking notes", notes.speakingNotes],
+  ];
+
+  lines.push("", "Internal presenter notes");
+  if (notes.fundBenefitAmount) lines.push(`- Fund benefit amount: R ${notes.fundBenefitAmount}`);
+  if (allocation.hasPercentages) lines.push(`- Proposed allocation total: ${allocation.percentageTotal}%`);
+  if (allocation.hasAmounts) lines.push(`- Proposed allocation amount total: R ${allocation.amountTotal.toFixed(2)}`);
+
+  for (const person of beneficiaries) {
+    const finding = notes.beneficiaryFindings[person.id];
+    if (!finding) continue;
+    lines.push(`- ${person.name || "Unnamed beneficiary"}: finding ${finding.dependencyFinding}; allocation ${finding.allocationPercentage || "not captured"}%`);
+    if (finding.evidenceSummary) lines.push(`  Evidence: ${finding.evidenceSummary}`);
+    if (finding.allocationRationale) lines.push(`  Allocation rationale: ${finding.allocationRationale}`);
+  }
+
+  for (const [title, value] of noteSections) {
+    if (value) lines.push("", title, value);
+  }
 }
 
 function buildMissingDocumentsText(caseData, sections) {
@@ -1665,22 +2018,26 @@ function loadSavedCase() {
 function loadSavedCases() {
   try {
     const saved = JSON.parse(localStorage.getItem(SAVED_CASES_KEY));
-    if (!Array.isArray(saved)) return [];
-    return saved
-      .filter((item) => item && typeof item === "object" && item.caseData)
-      .map((item) => ({
-        id: item.id || uid("saved-case"),
-        caseReference: item.caseReference || "",
-        deceasedName: item.deceasedName || "",
-        readiness: item.readiness || "Not ready",
-        progress: item.progress || { percent: 0, have: 0, applicable: 0, actionable: 0 },
-        updatedAt: item.updatedAt || new Date(0).toISOString(),
-        caseData: normalizeImportedCase(item.caseData),
-      }))
-      .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+    return normalizeSavedCases(saved);
   } catch {
     return [];
   }
+}
+
+function normalizeSavedCases(saved) {
+  if (!Array.isArray(saved)) return [];
+  return saved
+    .filter((item) => item && typeof item === "object" && item.caseData)
+    .map((item) => ({
+      id: item.id || uid("saved-case"),
+      caseReference: item.caseReference || "",
+      deceasedName: item.deceasedName || "",
+      readiness: item.readiness || "Not ready",
+      progress: item.progress || { percent: 0, have: 0, applicable: 0, actionable: 0 },
+      updatedAt: item.updatedAt || new Date(0).toISOString(),
+      caseData: normalizeImportedCase(item.caseData),
+    }))
+    .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
 }
 
 function buildSavedCaseEntry(caseData, progress, readiness) {
@@ -1764,9 +2121,11 @@ function normalizeImportedCase(value) {
       relationshipToDeceased: witness.relationshipToDeceased || "",
     })),
     documentRecords: {},
+    presenter: createEmptyPresenter(),
   };
 
   normalized.documentRecords = migrateDocumentRecords(base.documentRecords, base.checked);
+  normalized.presenter = normalizePresenter(base.presenter, normalized.beneficiaries);
   return normalized;
 }
 
@@ -1790,4 +2149,5 @@ function migrateDocumentRecords(documentRecords, checked) {
   return migrated;
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+const rootView = resolveAppView(window.location.pathname);
+createRoot(document.getElementById("root")).render(rootView === "presenter" ? <PresenterApp /> : <App />);

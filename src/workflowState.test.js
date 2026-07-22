@@ -208,9 +208,26 @@ test("meaningful draft detection ignores untouched starter rows", () => {
   assert.equal(hasMeaningfulCaseData({ ...untouched, caseReference: "PSSPF-1" }), true);
   assert.equal(hasMeaningfulCaseData({
     ...untouched,
+    presenter: { ...emptyPresenter(), speakingNotes: "Clarify the sibling dependency finding." },
+  }), true);
+  assert.equal(hasMeaningfulCaseData({
+    ...untouched,
     documentRecords: { "claim::death-certificate": { status: "Have", notes: "" } },
   }), true);
 });
+
+function emptyPresenter() {
+  return {
+    fundBenefitAmount: "",
+    investigationSummary: "",
+    interviewHighlights: "",
+    recommendation: "",
+    risksAndContradictions: "",
+    fundQuestions: "",
+    speakingNotes: "",
+    beneficiaryFindings: {},
+  };
+}
 
 test("new beneficiaries are inserted before existing beneficiary rows", () => {
   const existing = [{ id: "first" }, { id: "second" }];

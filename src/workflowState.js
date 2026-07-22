@@ -126,6 +126,13 @@ export function hasMeaningfulCaseData(caseData = {}) {
     || (hasText(person.relationship) && person.relationship !== "Child"),
   )) return true;
   if ((caseData.witnesses || []).some(hasWitnessDetails)) return true;
+  const presenter = caseData.presenter || {};
+  if (Object.entries(presenter).some(([key, value]) =>
+    key !== "beneficiaryFindings" && hasText(value),
+  )) return true;
+  if (Object.values(presenter.beneficiaryFindings || {}).some((finding) =>
+    Object.entries(finding || {}).some(([key, value]) => key !== "dependencyFinding" && hasText(value)),
+  )) return true;
   return Object.keys(caseData.documentRecords || {}).length > 0;
 }
 

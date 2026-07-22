@@ -15,6 +15,7 @@ import { getReviewView, resolveReviewMode } from "./reviewView.js";
 import { getNextActionMenuState } from "./actionMenu.js";
 import { buildReportModel } from "./reportView.js";
 import { buildSavedCasesExport, extractSavedCaseCandidates, mergeSavedCases } from "./savedCasesTransfer.js";
+import { buildBatchDocumentReportZip } from "./batchDocumentReport.js";
 import {
   createEmptyBeneficiaryFinding,
   createEmptyPresenter,
@@ -644,6 +645,18 @@ function App() {
     announce(`Exported ${savedCases.length} saved ${savedCases.length === 1 ? "case" : "cases"}.`);
   }
 
+  async function exportBatchDocumentReport() {
+    try {
+      const zip = await buildBatchDocumentReportZip(savedCases, buildSections);
+      const blob = new Blob([zip], { type: "application/zip" });
+      const date = new Date().toISOString().slice(0, 10);
+      downloadBlob(blob, `doc-check-document-reports-${date}.zip`);
+      announce(`Exported ${savedCases.length} PDF document ${savedCases.length === 1 ? "report" : "reports"} in one ZIP file.`);
+    } catch {
+      announce("Could not create the PDF report ZIP. Try again.", "error", false);
+    }
+  }
+
   async function batchImportCases(event) {
     const files = [...(event.target.files || [])];
     if (!files.length) return;
@@ -797,6 +810,7 @@ function App() {
             onLoad={loadSavedCaseEntry}
             onRemove={confirmRemoveSavedCase}
             onExport={exportSavedCases}
+            onExportDocumentReport={exportBatchDocumentReport}
             onBatchUpload={() => batchImportRef.current?.click()}
             open={openPanels.has("saved-cases")}
             onToggle={togglePanel}
@@ -1549,7 +1563,7 @@ function StatusMetric({ label, value, tone = "" }) {
   );
 }
 
-function SavedCasesPanel({ savedCases, onLoad, onRemove, onExport, onBatchUpload, open, onToggle }) {
+function SavedCasesPanel({ savedCases, onLoad, onRemove, onExport, onExportDocumentReport, onBatchUpload, open, onToggle }) {
   const [searchQuery, setSearchQuery] = useState("");
   const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
   const filteredCases = normalizedQuery
@@ -1573,6 +1587,7 @@ function SavedCasesPanel({ savedCases, onLoad, onRemove, onExport, onBatchUpload
       <div className="saved-cases-panel">
       <div className="saved-case-transfer-actions">
         <button type="button" className="small-btn" onClick={onBatchUpload}>Batch upload</button>
+        <button type="button" className="small-btn" onClick={onExportDocumentReport} disabled={!savedCases.length}>Export PDF reports (.zip)</button>
         <button type="button" className="small-btn" onClick={onExport} disabled={!savedCases.length}>Export all saved cases</button>
       </div>
       {savedCases.length ? (

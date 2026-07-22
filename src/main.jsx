@@ -1,8 +1,27 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import { resolveAppView } from "./appView.js";
+import {
+  DOCUMENT_STATUSES as STATUSES,
+  collectDocumentRows,
+  documentKey as docKey,
+  emptyDocumentRecord as emptyRecord,
+  getDocumentRecord,
+  getProgress,
+  getReadiness,
+} from "./documentProgress.js";
 import { getReviewView, resolveReviewMode } from "./reviewView.js";
 import { getNextActionMenuState } from "./actionMenu.js";
+import { buildReportModel } from "./reportView.js";
+import {
+  createEmptyBeneficiaryFinding,
+  createEmptyPresenter,
+  DEPENDENCY_FINDINGS,
+  getAllocationSummary,
+  normalizePresenter,
+  removePresenterBeneficiary,
+} from "./presenterView.js";
 import {
   filterBeneficiaryDocuments,
   getCaseSaveState,
@@ -19,8 +38,6 @@ const STORAGE_KEY = "caseDocumentChecklist.v1";
 const SAVED_CASES_KEY = "caseDocumentChecklist.savedCases.v1";
 const MIN_WITNESSES = 2;
 const CERTIFICATION_YEAR = new Date().getFullYear();
-
-const STATUSES = ["Have", "Missing", "N/A", "Received but unclear"];
 
 const RELATIONSHIPS = [
   "Spouse",
@@ -223,13 +240,6 @@ function createWitnessSlots(count = MIN_WITNESSES) {
   return Array.from({ length: count }, () => newWitness());
 }
 
-function emptyRecord(status = "Missing") {
-  return {
-    status,
-    notes: "",
-  };
-}
-
 const initialCase = {
   caseReference: "",
   deceased: {
@@ -243,6 +253,7 @@ const initialCase = {
   beneficiaries: [newBeneficiary()],
   witnesses: createWitnessSlots(),
   documentRecords: {},
+  presenter: createEmptyPresenter(),
 };
 
 function App() {
@@ -274,6 +285,29 @@ function App() {
   useEffect(() => {
     localStorage.setItem(SAVED_CASES_KEY, JSON.stringify(savedCases));
   }, [savedCases]);
+
+  useEffect(() => {
+    const synchronize = (event) => {
+      if (event.storageArea !== localStorage) return;
+      if (event.key === STORAGE_KEY && event.newValue) {
+        try {
+          setCaseData(normalizeImportedCase(JSON.parse(event.newValue)));
+          setHasInteracted(true);
+        } catch {
+          // Ignore malformed data from an unrelated browser tab.
+        }
+      }
+      if (event.key === SAVED_CASES_KEY && event.newValue) {
+        try {
+          setSavedCases(normalizeSavedCases(JSON.parse(event.newValue)));
+        } catch {
+          // Ignore malformed data from an unrelated browser tab.
+        }
+      }
+    };
+    window.addEventListener("storage", synchronize);
+    return () => window.removeEventListener("storage", synchronize);
+  }, []);
 
   useEffect(() => {
     if (!pendingNewBeneficiaryIdRef.current || !newBeneficiaryNameRef.current) return;
@@ -437,6 +471,7 @@ function App() {
     setCaseData((current) => ({
       ...current,
       beneficiaries: current.beneficiaries.filter((person) => person.id !== id),
+      presenter: removePresenterBeneficiary(current.presenter, id),
     }));
   }
 
@@ -479,6 +514,7 @@ function App() {
       beneficiaries: [newBeneficiary()],
       witnesses: createWitnessSlots(),
       documentRecords: {},
+      presenter: createEmptyPresenter(),
     };
     setCaseData(nextCase);
     setReferenceError("");
@@ -570,6 +606,15 @@ function App() {
     }
   }
 
+  function openPresenter() {
+    window.open("/presenter", "_blank", "noopener,noreferrer");
+  }
+
+  function openReport() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(caseData));
+    window.open("/report", "_blank", "noopener,noreferrer");
+  }
+
   async function importCase(event) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -600,6 +645,7 @@ function App() {
         </div>
         <div className="top-actions">
           <button type="button" className="primary-btn" onClick={saveCurrentCase}>Save case</button>
+          <button type="button" className="secondary-btn" onClick={openPresenter}>Open Presenter</button>
           <button type="button" className="secondary-btn" onClick={copyWhatsAppMessage}>Copy WhatsApp message</button>
           <div className="action-menu" ref={actionMenuRef}>
             <button
@@ -637,6 +683,10 @@ function App() {
                   setActionMenuOpen((current) => getNextActionMenuState(current, "select"));
                   importRef.current?.click();
                 }}>Import case</button>
+                <button type="button" role="menuitem" onClick={() => {
+                  setActionMenuOpen((current) => getNextActionMenuState(current, "select"));
+                  openReport();
+                }}>Generate progress report</button>
                 <button type="button" role="menuitem" onClick={() => {
                   setActionMenuOpen((current) => getNextActionMenuState(current, "select"));
                   exportFullCaseInfo();
@@ -913,6 +963,483 @@ function App() {
       ) : null}
     </main>
   );
+}
+
+function ReportApp() {
+  const [caseData, setCaseData] = useState(() => loadSavedCase());
+  const [generatedAt, setGeneratedAt] = useState(() => new Date().toISOString());
+
+  useEffect(() => {
+    const synchronize = (event) => {
+      if (event.storageArea !== localStorage || event.key !== STORAGE_KEY || !event.newValue) return;
+      try {
+        setCaseData(normalizeImportedCase(JSON.parse(event.newValue)));
+        setGeneratedAt(new Date().toISOString());
+      } catch {
+        // Keep the last valid report snapshot when another tab writes malformed data.
+      }
+    };
+    window.addEventListener("storage", synchronize);
+    return () => window.removeEventListener("storage", synchronize);
+  }, []);
+
+  const sections = useMemo(() => buildSections(caseData), [caseData]);
+  const setupSections = useMemo(() => getSetupSectionStates(caseData), [caseData]);
+  const report = useMemo(
+    () => buildReportModel({ caseData, sections, setupSections, generatedAt }),
+    [caseData, sections, setupSections, generatedAt],
+  );
+
+  useEffect(() => {
+    const previousTitle = document.title;
+    const reference = report.caseReference === "Not captured" ? "Draft" : report.caseReference;
+    document.title = `Case Progress Report - ${reference}`;
+    return () => { document.title = previousTitle; };
+  }, [report.caseReference]);
+
+  if (!hasMeaningfulCaseData(caseData)) return <ReportEmptyState />;
+
+  return (
+    <main className="report-shell">
+      <nav className="report-screen-actions" aria-label="Report actions">
+        <a className="secondary-btn" href="/">Back to checklist</a>
+        <button type="button" className="primary-btn" onClick={() => window.print()}>Print / Save PDF</button>
+      </nav>
+
+      <article className="report-paper">
+        <header className="report-header">
+          <div className="report-brand">
+            <span className="brand-mark" aria-hidden="true">37C</span>
+            <div>
+              <span className="report-kicker">Operations and management</span>
+              <h1>Case Progress Report</h1>
+              <p>Document readiness and outstanding action summary</p>
+            </div>
+          </div>
+          <div className="report-generated">
+            <span>Generated</span>
+            <strong>{formatReportTimestamp(report.generatedAt)}</strong>
+          </div>
+        </header>
+
+        <dl className="report-case-facts" aria-label="Case identification">
+          <ReportFact label="Case reference" value={report.caseReference} />
+          <ReportFact label="Deceased member" value={report.deceasedName} />
+          <ReportFact label="Member ID" value={report.deceasedId} />
+          <ReportFact label="Date of death" value={report.dateOfDeath} />
+        </dl>
+
+        <section className="report-summary" aria-labelledby="report-summary-title">
+          <div className="report-section-heading">
+            <span>01</span>
+            <div>
+              <h2 id="report-summary-title">Progress summary</h2>
+              <p>Completion is calculated from applicable checklist documents; N/A items are excluded from the percentage.</p>
+            </div>
+          </div>
+          <div className="report-metric-grid">
+            <ReportMetric label="Readiness" value={report.readiness} tone={readinessTone(report.readiness)} />
+            <ReportMetric label="Complete" value={`${report.progress.percent}%`} detail={`${report.progress.have} of ${report.progress.applicable} applicable`} />
+            <ReportMetric label="Missing" value={report.progress.missing} tone={report.progress.missing ? "missing" : "complete"} />
+            <ReportMetric label="Needs clarification" value={report.progress.unclear} tone={report.progress.unclear ? "warning" : "complete"} />
+            <ReportMetric label="Not applicable" value={report.progress.notApplicable} />
+          </div>
+        </section>
+
+        <section className="report-section" aria-labelledby="report-gaps-title">
+          <div className="report-section-heading">
+            <span>02</span>
+            <div>
+              <h2 id="report-gaps-title">Case information still needed</h2>
+              <p>Incomplete setup can change which documents apply to this case.</p>
+            </div>
+          </div>
+          {report.setupWarnings.length ? (
+            <ul className="report-warning-list">
+              {report.setupWarnings.map((warning) => (
+                <li key={warning.id}><strong>{warning.label}</strong><span>{warning.summary}</span></li>
+              ))}
+            </ul>
+          ) : (
+            <p className="report-complete-message">All required case setup areas are complete.</p>
+          )}
+        </section>
+
+        <ReportDocumentSection
+          number="03"
+          title="Missing documents"
+          description="Documents that have not yet been received."
+          groups={report.missingGroups}
+          emptyMessage="No documents are currently marked Missing."
+          showEmptyNotes
+        />
+
+        <ReportDocumentSection
+          number="04"
+          title="Received but clarification needed"
+          description="Documents received but not yet clear enough to close the checklist item."
+          groups={report.unclearGroups}
+          emptyMessage="No documents are currently marked Received but unclear."
+          showEmptyNotes
+        />
+
+        <ReportDocumentSection
+          number="05"
+          title="Full document status appendix"
+          description="Every currently generated checklist item, including Have, Missing, Received but unclear, and N/A."
+          groups={report.checklistGroups}
+          emptyMessage="No checklist documents have been generated for this draft."
+          appendix
+        />
+
+        <footer className="report-footer">
+          <span>Generated from Doc-Check 37C</span>
+          <span>Status reflects the active checklist at {formatReportTimestamp(report.generatedAt)}</span>
+        </footer>
+      </article>
+    </main>
+  );
+}
+
+function ReportFact({ label, value }) {
+  return <div><dt>{label}</dt><dd>{value}</dd></div>;
+}
+
+function ReportMetric({ label, value, detail, tone = "" }) {
+  return <div className={`report-metric ${tone}`}><span>{label}</span><strong>{value}</strong>{detail ? <small>{detail}</small> : null}</div>;
+}
+
+function ReportDocumentSection({ number, title, description, groups, emptyMessage, appendix = false, showEmptyNotes = false }) {
+  return (
+    <section className={`report-section report-documents ${appendix ? "report-appendix" : ""}`}>
+      <div className="report-section-heading">
+        <span>{number}</span>
+        <div><h2>{title}</h2><p>{description}</p></div>
+      </div>
+      {groups.length ? groups.map((group) => (
+        <section className="report-document-group" key={group.label}>
+          <h3>{group.label}</h3>
+          <div className="report-document-list">
+            {group.items.map((item) => (
+              <article className={`report-document-row ${statusClass(item.status)}`} key={item.key}>
+                <div className="report-document-main">
+                  <strong>{item.title}</strong>
+                  <span>{item.requirement || "No requirement description captured"}</span>
+                </div>
+                <span className={`report-status ${statusClass(item.status)}`}>{item.status}</span>
+                {item.reviewNote ? <p><b>Review note:</b> {item.reviewNote}</p> : showEmptyNotes ? <p className="report-no-note">No review note captured.</p> : null}
+              </article>
+            ))}
+          </div>
+        </section>
+      )) : <p className="report-complete-message">{emptyMessage}</p>}
+    </section>
+  );
+}
+
+function ReportEmptyState() {
+  return (
+    <main className="report-empty-state">
+      <span className="brand-mark" aria-hidden="true">37C</span>
+      <strong>No active case to report.</strong>
+      <p>Capture or load a case in the checklist, then generate the report again.</p>
+      <a className="primary-btn" href="/">Back to checklist</a>
+    </main>
+  );
+}
+
+function formatReportTimestamp(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not dated";
+  return date.toLocaleString("en-ZA", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function PresenterApp() {
+  const [caseData, setCaseData] = useState(() => loadSavedCase());
+  const [savedCases, setSavedCases] = useState(() => loadSavedCases());
+  const [feedback, setFeedback] = useState("");
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(caseData));
+  }, [caseData]);
+
+  useEffect(() => {
+    localStorage.setItem(SAVED_CASES_KEY, JSON.stringify(savedCases));
+  }, [savedCases]);
+
+  useEffect(() => {
+    const synchronize = (event) => {
+      if (event.storageArea !== localStorage) return;
+      if (event.key === STORAGE_KEY && event.newValue) {
+        try {
+          setCaseData(normalizeImportedCase(JSON.parse(event.newValue)));
+        } catch {
+          // Ignore malformed data from an unrelated browser tab.
+        }
+      }
+      if (event.key === SAVED_CASES_KEY && event.newValue) {
+        try {
+          setSavedCases(normalizeSavedCases(JSON.parse(event.newValue)));
+        } catch {
+          // Ignore malformed data from an unrelated browser tab.
+        }
+      }
+    };
+    window.addEventListener("storage", synchronize);
+    return () => window.removeEventListener("storage", synchronize);
+  }, []);
+
+  const sections = useMemo(() => buildSections(caseData), [caseData]);
+  const progress = useMemo(() => getProgress(sections, caseData.documentRecords), [sections, caseData.documentRecords]);
+  const readiness = useMemo(() => getReadiness(progress), [progress]);
+  const presenter = useMemo(
+    () => normalizePresenter(caseData.presenter, caseData.beneficiaries),
+    [caseData.presenter, caseData.beneficiaries],
+  );
+  const allocation = useMemo(
+    () => getAllocationSummary(presenter.beneficiaryFindings),
+    [presenter.beneficiaryFindings],
+  );
+  const actionableRows = useMemo(
+    () => collectDocumentRows(sections, caseData.documentRecords)
+      .filter((row) => ["Missing", "Received but unclear"].includes(row.record.status)),
+    [sections, caseData.documentRecords],
+  );
+
+  if (!hasMeaningfulCaseData(caseData)) return <PresenterEmptyState />;
+
+  function updatePresenter(field, value) {
+    setCaseData((current) => ({
+      ...current,
+      presenter: {
+        ...normalizePresenter(current.presenter, current.beneficiaries),
+        [field]: value,
+      },
+    }));
+  }
+
+  function updateBeneficiaryFinding(beneficiaryId, field, value) {
+    setCaseData((current) => {
+      const normalized = normalizePresenter(current.presenter, current.beneficiaries);
+      return {
+        ...current,
+        presenter: {
+          ...normalized,
+          beneficiaryFindings: {
+            ...normalized.beneficiaryFindings,
+            [beneficiaryId]: {
+              ...createEmptyBeneficiaryFinding(),
+              ...normalized.beneficiaryFindings[beneficiaryId],
+              [field]: value,
+            },
+          },
+        },
+      };
+    });
+  }
+
+  function saveCurrentCase() {
+    const error = validateCaseReference(caseData.caseReference);
+    if (error) {
+      setFeedback(error);
+      return;
+    }
+    const entry = buildSavedCaseEntry(caseData, progress, readiness);
+    setSavedCases((current) => [entry, ...current.filter((item) => item.id !== entry.id)]
+      .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)));
+    setFeedback(`Case ${entry.caseReference} saved.`);
+  }
+
+  return (
+    <main className="presenter-shell">
+      <header className="presenter-header">
+        <div className="presenter-brand">
+          <span className="brand-mark" aria-hidden="true">37C</span>
+          <div>
+            <span className="presenter-kicker">Internal presenter notes</span>
+            <h1>{caseData.caseReference || "Case presentation"}</h1>
+            <p>{caseData.deceased.fullName || "Deceased member not captured"}</p>
+            <span className="presenter-private-badge">Private working view</span>
+          </div>
+        </div>
+        <div className="presenter-actions" aria-label="Presenter actions">
+          <a className="secondary-btn" href="/">Back to checklist</a>
+          <button type="button" className="secondary-btn" onClick={() => window.print()}>Print notes</button>
+          <button type="button" className="primary-btn" onClick={saveCurrentCase}>Save case</button>
+        </div>
+      </header>
+
+      {feedback ? <div className="presenter-feedback" role="status">{feedback}</div> : null}
+
+      <section className="presenter-hero" aria-label="Case at a glance">
+        <div>
+          <span>Case readiness</span>
+          <strong className={readinessTone(readiness)}>{readiness}</strong>
+        </div>
+        <div>
+          <span>Document completion</span>
+          <strong>{progress.percent}%</strong>
+          <small>{progress.have} of {progress.applicable} applicable documents received</small>
+        </div>
+        <div>
+          <span>Needs action</span>
+          <strong className={progress.actionable ? "missing" : "complete"}>{progress.actionable}</strong>
+          <small>{progress.missing} missing · {progress.unclear} unclear</small>
+        </div>
+      </section>
+
+      <section className="presenter-section presenter-facts">
+        <div className="presenter-section-heading">
+          <span>01</span>
+          <div><h2>Case at a glance</h2><p>Verified facts already captured in the checklist.</p></div>
+        </div>
+        <dl className="presenter-fact-grid">
+          <PresenterFact label="Case reference" value={caseData.caseReference} />
+          <PresenterFact label="Deceased member" value={caseData.deceased.fullName} />
+          <PresenterFact label="Member ID" value={caseData.deceased.idNumber} />
+          <PresenterFact label="Age" value={presenterAge(caseData.deceased)} />
+          <PresenterFact label="Date of death" value={caseData.deceased.dateOfDeath} />
+          <PresenterFact label="Death type" value={selectedValue(caseData.scenarios.deathType)} />
+          <PresenterFact label="Marriage status" value={selectedValue(caseData.scenarios.marriageStatus)} />
+          <PresenterFact label="Previously divorced" value={selectedValue(caseData.scenarios.previouslyDivorced)} />
+          <PresenterFact label="Mother" value={selectedValue(caseData.scenarios.motherStatus)} />
+          <PresenterFact label="Father" value={selectedValue(caseData.scenarios.fatherStatus)} />
+        </dl>
+      </section>
+
+      <section className="presenter-section">
+        <div className="presenter-section-heading">
+          <span>02</span>
+          <div><h2>Beneficiaries and dependency</h2><p>Capture your working dependency conclusion and the evidence behind it.</p></div>
+        </div>
+        {caseData.beneficiaries.length ? (
+          <div className="presenter-beneficiary-list">
+            {caseData.beneficiaries.map((person, index) => {
+              const finding = presenter.beneficiaryFindings[person.id] || createEmptyBeneficiaryFinding();
+              return (
+                <article className="presenter-beneficiary" key={person.id}>
+                  <header>
+                    <span>{String(index + 1).padStart(2, "0")}</span>
+                    <div>
+                      <h3>{person.name || "Unnamed beneficiary"}</h3>
+                      <p>{beneficiaryType(person, caseData.scenarios).label} · Age {presenterAge(person)} · {selectedDependencyStatus(person) || "Dependency statement not captured"}</p>
+                    </div>
+                  </header>
+                  <div className="presenter-beneficiary-fields">
+                    <label className="presenter-field">
+                      <span>Dependency finding</span>
+                      <select value={finding.dependencyFinding} onChange={(event) => updateBeneficiaryFinding(person.id, "dependencyFinding", event.target.value)}>
+                        {DEPENDENCY_FINDINGS.map((option) => <option key={option}>{option}</option>)}
+                      </select>
+                      <small className="print-value">{finding.dependencyFinding}</small>
+                    </label>
+                    <PresenterInput label="Proposed allocation (%)" value={finding.allocationPercentage} inputMode="decimal" type="number" min="0" max="100" step="0.01" onChange={(value) => updateBeneficiaryFinding(person.id, "allocationPercentage", value)} />
+                    <PresenterInput label="Proposed amount (R)" value={finding.allocationAmount} inputMode="decimal" type="number" min="0" step="0.01" onChange={(value) => updateBeneficiaryFinding(person.id, "allocationAmount", value)} />
+                  </div>
+                  <PresenterTextArea label="Dependency evidence" value={finding.evidenceSummary} onChange={(value) => updateBeneficiaryFinding(person.id, "evidenceSummary", value)} placeholder="Support, household, income, caregiver and interview facts." />
+                  <PresenterTextArea label="Allocation rationale" value={finding.allocationRationale} onChange={(value) => updateBeneficiaryFinding(person.id, "allocationRationale", value)} placeholder="Why this proposed allocation is appropriate." />
+                </article>
+              );
+            })}
+          </div>
+        ) : <p className="presenter-empty-note">No named beneficiaries are captured yet. Return to the checklist to add them.</p>}
+      </section>
+
+      <section className="presenter-section presenter-allocation">
+        <div className="presenter-section-heading">
+          <span>03</span>
+          <div><h2>Proposed allocation</h2><p>Amounts are optional. Percentages remain editable and are checked against 100%.</p></div>
+        </div>
+        <div className="presenter-allocation-summary">
+          <PresenterInput label="Fund benefit amount (R)" value={presenter.fundBenefitAmount} inputMode="decimal" type="number" min="0" step="0.01" onChange={(value) => updatePresenter("fundBenefitAmount", value)} />
+          <div><span>Total proposed percentage</span><strong>{allocation.hasPercentages ? `${allocation.percentageTotal}%` : "Not captured"}</strong></div>
+          <div><span>Total proposed amount</span><strong>{allocation.hasAmounts ? formatZar(allocation.amountTotal) : "Not captured"}</strong></div>
+        </div>
+        {allocation.hasPercentages && !allocation.percentageComplete ? <p className="presenter-allocation-warning" role="status">Percentages currently total {allocation.percentageTotal}%. Confirm or adjust before presenting.</p> : null}
+      </section>
+
+      <section className="presenter-section presenter-notes-grid">
+        <div className="presenter-section-heading">
+          <span>04</span>
+          <div><h2>Analysis, decision points and speaking notes</h2><p>Private working notes saved with the case for quick reference while presenting.</p></div>
+        </div>
+        <div className="presenter-note-grid">
+          <PresenterTextArea label="Investigation and evidence summary" value={presenter.investigationSummary} onChange={(value) => updatePresenter("investigationSummary", value)} placeholder="What the tracer, affidavits, forms and records establish." />
+          <PresenterTextArea label="Important interview answers" value={presenter.interviewHighlights} onChange={(value) => updatePresenter("interviewHighlights", value)} placeholder="Dependency, household, financial support, caregiver and employment highlights." />
+          <PresenterTextArea label="Recommendation" value={presenter.recommendation} onChange={(value) => updatePresenter("recommendation", value)} placeholder="The recommendation to put before the Fund." />
+          <PresenterTextArea label="Risks and contradictions" value={presenter.risksAndContradictions} onChange={(value) => updatePresenter("risksAndContradictions", value)} placeholder="Conflicting evidence, unresolved details or allocation checks." />
+          <PresenterTextArea label="Questions requiring a Fund decision" value={presenter.fundQuestions} onChange={(value) => updatePresenter("fundQuestions", value)} placeholder="Decisions or clarifications needed from the Fund." />
+          <PresenterTextArea label="Final speaking notes" value={presenter.speakingNotes} onChange={(value) => updatePresenter("speakingNotes", value)} placeholder="Your concise closing frame for the presentation." />
+        </div>
+      </section>
+
+      <section className="presenter-section">
+        <div className="presenter-section-heading">
+          <span>05</span>
+          <div><h2>Outstanding documents and review points</h2><p>Generated from the live checklist; not a separate list to maintain.</p></div>
+        </div>
+        {actionableRows.length ? (
+          <div className="presenter-action-list">
+            {actionableRows.map((row) => <article key={row.key} className={statusClass(row.record.status)}>
+              <div><strong>{row.title}</strong><span>{row.group}{row.subtitle ? ` · ${row.subtitle}` : ""}</span></div>
+              <p>{row.record.status}{row.record.notes ? ` — ${row.record.notes}` : ""}</p>
+            </article>)}
+          </div>
+        ) : <p className="presenter-complete-note">No document items are currently marked Missing or Received but unclear.</p>}
+      </section>
+
+      <section className="presenter-section presenter-witnesses">
+        <div className="presenter-section-heading">
+          <span>06</span>
+          <div><h2>Witnesses</h2><p>Captured contacts that can support the Fund discussion.</p></div>
+        </div>
+        <div className="presenter-witness-list">
+          {caseData.witnesses.filter(hasWitnessDetails).length ? caseData.witnesses.filter(hasWitnessDetails).map((witness) => <div key={witness.id}>
+            <strong>{witness.name || "Unnamed witness"}</strong><span>{witness.relationshipToDeceased || "Relationship not captured"}{witness.idNumber ? ` · ID ${witness.idNumber}` : ""}</span>
+          </div>) : <p className="presenter-empty-note">No witness details captured.</p>}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function PresenterEmptyState() {
+  useEffect(() => {
+    const timer = window.setTimeout(() => window.location.replace("/"), 1200);
+    return () => window.clearTimeout(timer);
+  }, []);
+  return <main className="presenter-empty-state"><strong>No active case to present.</strong><span>Returning to the checklist…</span><a href="/">Back to checklist now</a></main>;
+}
+
+function PresenterFact({ label, value }) {
+  return <div><dt>{label}</dt><dd>{value || "Not captured"}</dd></div>;
+}
+
+function PresenterInput({ label, value, onChange, ...inputProps }) {
+  return <label className="presenter-field"><span>{label}</span><input value={value || ""} onChange={(event) => onChange(event.target.value)} {...inputProps} /><small className="print-value">{value || "Not captured"}</small></label>;
+}
+
+function PresenterTextArea({ label, value, onChange, placeholder }) {
+  return <label className="presenter-note"><span>{label}</span><textarea value={value || ""} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} /><small className="print-value">{value || "Not captured"}</small></label>;
+}
+
+function presenterAge(person) {
+  const age = getPersonAge(person);
+  return age == null ? "Not captured" : String(age);
+}
+
+function selectedValue(value) {
+  return value && value !== CHOOSE_VALUE ? value : "Not captured";
+}
+
+function formatZar(value) {
+  return new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR" }).format(value);
 }
 
 function TracerHandoffPanel({ progress, readiness }) {
@@ -1362,54 +1889,11 @@ function hasWitnessDetails(witness) {
   return Boolean(String(witness.name || "").trim() || String(witness.idNumber || "").trim());
 }
 
-function getProgress(sections, records) {
-  const rows = collectDocumentRows(sections, records);
-  const applicable = rows.filter((row) => row.record.status !== "N/A");
-  const have = applicable.filter((row) => row.record.status === "Have").length;
-  const missing = applicable.filter((row) => row.record.status === "Missing").length;
-  const unclear = applicable.filter((row) => row.record.status === "Received but unclear").length;
-  const notApplicable = rows.length - applicable.length;
-
-  return {
-    total: rows.length,
-    applicable: applicable.length,
-    have,
-    missing,
-    unclear,
-    notApplicable,
-    actionable: missing + unclear,
-    percent: applicable.length ? Math.round((have / applicable.length) * 100) : 100,
-  };
-}
-
-function getReadiness(progress) {
-  if (progress.missing > 0) return "Not ready";
-  if (progress.unclear > 0) return "Ready for follow-up";
-  if (progress.have > 0 && progress.percent === 100) return "Ready for trustee pack";
-  return "Ready for review";
-}
-
 function readinessTone(readiness) {
   if (readiness === "Not ready") return "missing";
   if (readiness === "Ready for follow-up") return "warning";
   if (readiness === "Ready for trustee pack") return "complete";
   return "";
-}
-
-function collectDocumentRows(sections, records) {
-  return sections.flatMap((section) =>
-    section.docs.map((item) => {
-      const key = docKey(section.key, item.id);
-      return {
-        key,
-        group: section.title,
-        subtitle: section.subtitle,
-        title: item.title,
-        note: item.note,
-        record: getDocumentRecord(records, key),
-      };
-    }),
-  );
 }
 
 function buildFullCaseInfoText(caseData, sections, progress, readiness) {
@@ -1436,9 +1920,40 @@ function buildFullCaseInfoText(caseData, sections, progress, readiness) {
     ...witnessLines(caseData),
   ];
 
+  appendPresenterInformation(lines, caseData.presenter, beneficiaries);
   appendAllDocumentsGroup(lines, rows);
 
   return `${lines.filter(Boolean).join("\n")}\n`;
+}
+
+function appendPresenterInformation(lines, presenter, beneficiaries) {
+  const notes = normalizePresenter(presenter, beneficiaries);
+  const allocation = getAllocationSummary(notes.beneficiaryFindings);
+  const noteSections = [
+    ["Investigation and evidence", notes.investigationSummary],
+    ["Important interview answers", notes.interviewHighlights],
+    ["Recommendation", notes.recommendation],
+    ["Risks and contradictions", notes.risksAndContradictions],
+    ["Questions for the Fund", notes.fundQuestions],
+    ["Speaking notes", notes.speakingNotes],
+  ];
+
+  lines.push("", "Internal presenter notes");
+  if (notes.fundBenefitAmount) lines.push(`- Fund benefit amount: R ${notes.fundBenefitAmount}`);
+  if (allocation.hasPercentages) lines.push(`- Proposed allocation total: ${allocation.percentageTotal}%`);
+  if (allocation.hasAmounts) lines.push(`- Proposed allocation amount total: R ${allocation.amountTotal.toFixed(2)}`);
+
+  for (const person of beneficiaries) {
+    const finding = notes.beneficiaryFindings[person.id];
+    if (!finding) continue;
+    lines.push(`- ${person.name || "Unnamed beneficiary"}: finding ${finding.dependencyFinding}; allocation ${finding.allocationPercentage || "not captured"}%`);
+    if (finding.evidenceSummary) lines.push(`  Evidence: ${finding.evidenceSummary}`);
+    if (finding.allocationRationale) lines.push(`  Allocation rationale: ${finding.allocationRationale}`);
+  }
+
+  for (const [title, value] of noteSections) {
+    if (value) lines.push("", title, value);
+  }
 }
 
 function buildMissingDocumentsText(caseData, sections) {
@@ -1599,24 +2114,8 @@ function downloadBlob(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
-function docKey(sectionKey, docId) {
-  return `${sectionKey}::${docId}`;
-}
-
 function statusClass(status) {
   return String(status || "Missing").toLowerCase().replace(/[^a-z0-9]+/g, "-");
-}
-
-function getDocumentRecord(records, key) {
-  const record = records?.[key];
-  if (record && typeof record === "object" && !Array.isArray(record)) {
-    return {
-      status: STATUSES.includes(record.status) ? record.status : (record.checked ? "Have" : "Missing"),
-      notes: record.notes || "",
-    };
-  }
-  if (record === true) return emptyRecord("Have");
-  return emptyRecord("Missing");
 }
 
 function ageLabel(person) {
@@ -1665,22 +2164,26 @@ function loadSavedCase() {
 function loadSavedCases() {
   try {
     const saved = JSON.parse(localStorage.getItem(SAVED_CASES_KEY));
-    if (!Array.isArray(saved)) return [];
-    return saved
-      .filter((item) => item && typeof item === "object" && item.caseData)
-      .map((item) => ({
-        id: item.id || uid("saved-case"),
-        caseReference: item.caseReference || "",
-        deceasedName: item.deceasedName || "",
-        readiness: item.readiness || "Not ready",
-        progress: item.progress || { percent: 0, have: 0, applicable: 0, actionable: 0 },
-        updatedAt: item.updatedAt || new Date(0).toISOString(),
-        caseData: normalizeImportedCase(item.caseData),
-      }))
-      .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+    return normalizeSavedCases(saved);
   } catch {
     return [];
   }
+}
+
+function normalizeSavedCases(saved) {
+  if (!Array.isArray(saved)) return [];
+  return saved
+    .filter((item) => item && typeof item === "object" && item.caseData)
+    .map((item) => ({
+      id: item.id || uid("saved-case"),
+      caseReference: item.caseReference || "",
+      deceasedName: item.deceasedName || "",
+      readiness: item.readiness || "Not ready",
+      progress: item.progress || { percent: 0, have: 0, applicable: 0, actionable: 0 },
+      updatedAt: item.updatedAt || new Date(0).toISOString(),
+      caseData: normalizeImportedCase(item.caseData),
+    }))
+    .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
 }
 
 function buildSavedCaseEntry(caseData, progress, readiness) {
@@ -1764,9 +2267,11 @@ function normalizeImportedCase(value) {
       relationshipToDeceased: witness.relationshipToDeceased || "",
     })),
     documentRecords: {},
+    presenter: createEmptyPresenter(),
   };
 
   normalized.documentRecords = migrateDocumentRecords(base.documentRecords, base.checked);
+  normalized.presenter = normalizePresenter(base.presenter, normalized.beneficiaries);
   return normalized;
 }
 
@@ -1790,4 +2295,7 @@ function migrateDocumentRecords(documentRecords, checked) {
   return migrated;
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+const rootView = resolveAppView(window.location.pathname);
+createRoot(document.getElementById("root")).render(
+  rootView === "presenter" ? <PresenterApp /> : rootView === "report" ? <ReportApp /> : <App />,
+);

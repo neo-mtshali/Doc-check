@@ -1,8 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import { resolveAppView } from "./appView.js";
+import {
+  DOCUMENT_STATUSES as STATUSES,
+  collectDocumentRows,
+  documentKey as docKey,
+  emptyDocumentRecord as emptyRecord,
+  getDocumentRecord,
+  getProgress,
+  getReadiness,
+} from "./documentProgress.js";
 import { getReviewView, resolveReviewMode } from "./reviewView.js";
 import { getNextActionMenuState } from "./actionMenu.js";
+import { buildReportModel } from "./reportView.js";
 import {
   createEmptyBeneficiaryFinding,
   createEmptyPresenter,
@@ -10,7 +21,6 @@ import {
   getAllocationSummary,
   normalizePresenter,
   removePresenterBeneficiary,
-  resolveAppView,
 } from "./presenterView.js";
 import {
   filterBeneficiaryDocuments,
@@ -28,8 +38,6 @@ const STORAGE_KEY = "caseDocumentChecklist.v1";
 const SAVED_CASES_KEY = "caseDocumentChecklist.savedCases.v1";
 const MIN_WITNESSES = 2;
 const CERTIFICATION_YEAR = new Date().getFullYear();
-
-const STATUSES = ["Have", "Missing", "N/A", "Received but unclear"];
 
 const RELATIONSHIPS = [
   "Spouse",
@@ -230,13 +238,6 @@ function newWitness() {
 
 function createWitnessSlots(count = MIN_WITNESSES) {
   return Array.from({ length: count }, () => newWitness());
-}
-
-function emptyRecord(status = "Missing") {
-  return {
-    status,
-    notes: "",
-  };
 }
 
 const initialCase = {
@@ -609,6 +610,11 @@ function App() {
     window.open("/presenter", "_blank", "noopener,noreferrer");
   }
 
+  function openReport() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(caseData));
+    window.open("/report", "_blank", "noopener,noreferrer");
+  }
+
   async function importCase(event) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -677,6 +683,10 @@ function App() {
                   setActionMenuOpen((current) => getNextActionMenuState(current, "select"));
                   importRef.current?.click();
                 }}>Import case</button>
+                <button type="button" role="menuitem" onClick={() => {
+                  setActionMenuOpen((current) => getNextActionMenuState(current, "select"));
+                  openReport();
+                }}>Generate progress report</button>
                 <button type="button" role="menuitem" onClick={() => {
                   setActionMenuOpen((current) => getNextActionMenuState(current, "select"));
                   exportFullCaseInfo();
@@ -953,6 +963,201 @@ function App() {
       ) : null}
     </main>
   );
+}
+
+function ReportApp() {
+  const [caseData, setCaseData] = useState(() => loadSavedCase());
+  const [generatedAt, setGeneratedAt] = useState(() => new Date().toISOString());
+
+  useEffect(() => {
+    const synchronize = (event) => {
+      if (event.storageArea !== localStorage || event.key !== STORAGE_KEY || !event.newValue) return;
+      try {
+        setCaseData(normalizeImportedCase(JSON.parse(event.newValue)));
+        setGeneratedAt(new Date().toISOString());
+      } catch {
+        // Keep the last valid report snapshot when another tab writes malformed data.
+      }
+    };
+    window.addEventListener("storage", synchronize);
+    return () => window.removeEventListener("storage", synchronize);
+  }, []);
+
+  const sections = useMemo(() => buildSections(caseData), [caseData]);
+  const setupSections = useMemo(() => getSetupSectionStates(caseData), [caseData]);
+  const report = useMemo(
+    () => buildReportModel({ caseData, sections, setupSections, generatedAt }),
+    [caseData, sections, setupSections, generatedAt],
+  );
+
+  useEffect(() => {
+    const previousTitle = document.title;
+    const reference = report.caseReference === "Not captured" ? "Draft" : report.caseReference;
+    document.title = `Case Progress Report - ${reference}`;
+    return () => { document.title = previousTitle; };
+  }, [report.caseReference]);
+
+  if (!hasMeaningfulCaseData(caseData)) return <ReportEmptyState />;
+
+  return (
+    <main className="report-shell">
+      <nav className="report-screen-actions" aria-label="Report actions">
+        <a className="secondary-btn" href="/">Back to checklist</a>
+        <button type="button" className="primary-btn" onClick={() => window.print()}>Print / Save PDF</button>
+      </nav>
+
+      <article className="report-paper">
+        <header className="report-header">
+          <div className="report-brand">
+            <span className="brand-mark" aria-hidden="true">37C</span>
+            <div>
+              <span className="report-kicker">Operations and management</span>
+              <h1>Case Progress Report</h1>
+              <p>Document readiness and outstanding action summary</p>
+            </div>
+          </div>
+          <div className="report-generated">
+            <span>Generated</span>
+            <strong>{formatReportTimestamp(report.generatedAt)}</strong>
+          </div>
+        </header>
+
+        <dl className="report-case-facts" aria-label="Case identification">
+          <ReportFact label="Case reference" value={report.caseReference} />
+          <ReportFact label="Deceased member" value={report.deceasedName} />
+          <ReportFact label="Member ID" value={report.deceasedId} />
+          <ReportFact label="Date of death" value={report.dateOfDeath} />
+        </dl>
+
+        <section className="report-summary" aria-labelledby="report-summary-title">
+          <div className="report-section-heading">
+            <span>01</span>
+            <div>
+              <h2 id="report-summary-title">Progress summary</h2>
+              <p>Completion is calculated from applicable checklist documents; N/A items are excluded from the percentage.</p>
+            </div>
+          </div>
+          <div className="report-metric-grid">
+            <ReportMetric label="Readiness" value={report.readiness} tone={readinessTone(report.readiness)} />
+            <ReportMetric label="Complete" value={`${report.progress.percent}%`} detail={`${report.progress.have} of ${report.progress.applicable} applicable`} />
+            <ReportMetric label="Missing" value={report.progress.missing} tone={report.progress.missing ? "missing" : "complete"} />
+            <ReportMetric label="Needs clarification" value={report.progress.unclear} tone={report.progress.unclear ? "warning" : "complete"} />
+            <ReportMetric label="Not applicable" value={report.progress.notApplicable} />
+          </div>
+        </section>
+
+        <section className="report-section" aria-labelledby="report-gaps-title">
+          <div className="report-section-heading">
+            <span>02</span>
+            <div>
+              <h2 id="report-gaps-title">Case information still needed</h2>
+              <p>Incomplete setup can change which documents apply to this case.</p>
+            </div>
+          </div>
+          {report.setupWarnings.length ? (
+            <ul className="report-warning-list">
+              {report.setupWarnings.map((warning) => (
+                <li key={warning.id}><strong>{warning.label}</strong><span>{warning.summary}</span></li>
+              ))}
+            </ul>
+          ) : (
+            <p className="report-complete-message">All required case setup areas are complete.</p>
+          )}
+        </section>
+
+        <ReportDocumentSection
+          number="03"
+          title="Missing documents"
+          description="Documents that have not yet been received."
+          groups={report.missingGroups}
+          emptyMessage="No documents are currently marked Missing."
+          showEmptyNotes
+        />
+
+        <ReportDocumentSection
+          number="04"
+          title="Received but clarification needed"
+          description="Documents received but not yet clear enough to close the checklist item."
+          groups={report.unclearGroups}
+          emptyMessage="No documents are currently marked Received but unclear."
+          showEmptyNotes
+        />
+
+        <ReportDocumentSection
+          number="05"
+          title="Full document status appendix"
+          description="Every currently generated checklist item, including Have, Missing, Received but unclear, and N/A."
+          groups={report.checklistGroups}
+          emptyMessage="No checklist documents have been generated for this draft."
+          appendix
+        />
+
+        <footer className="report-footer">
+          <span>Generated from Doc-Check 37C</span>
+          <span>Status reflects the active checklist at {formatReportTimestamp(report.generatedAt)}</span>
+        </footer>
+      </article>
+    </main>
+  );
+}
+
+function ReportFact({ label, value }) {
+  return <div><dt>{label}</dt><dd>{value}</dd></div>;
+}
+
+function ReportMetric({ label, value, detail, tone = "" }) {
+  return <div className={`report-metric ${tone}`}><span>{label}</span><strong>{value}</strong>{detail ? <small>{detail}</small> : null}</div>;
+}
+
+function ReportDocumentSection({ number, title, description, groups, emptyMessage, appendix = false, showEmptyNotes = false }) {
+  return (
+    <section className={`report-section report-documents ${appendix ? "report-appendix" : ""}`}>
+      <div className="report-section-heading">
+        <span>{number}</span>
+        <div><h2>{title}</h2><p>{description}</p></div>
+      </div>
+      {groups.length ? groups.map((group) => (
+        <section className="report-document-group" key={group.label}>
+          <h3>{group.label}</h3>
+          <div className="report-document-list">
+            {group.items.map((item) => (
+              <article className={`report-document-row ${statusClass(item.status)}`} key={item.key}>
+                <div className="report-document-main">
+                  <strong>{item.title}</strong>
+                  <span>{item.requirement || "No requirement description captured"}</span>
+                </div>
+                <span className={`report-status ${statusClass(item.status)}`}>{item.status}</span>
+                {item.reviewNote ? <p><b>Review note:</b> {item.reviewNote}</p> : showEmptyNotes ? <p className="report-no-note">No review note captured.</p> : null}
+              </article>
+            ))}
+          </div>
+        </section>
+      )) : <p className="report-complete-message">{emptyMessage}</p>}
+    </section>
+  );
+}
+
+function ReportEmptyState() {
+  return (
+    <main className="report-empty-state">
+      <span className="brand-mark" aria-hidden="true">37C</span>
+      <strong>No active case to report.</strong>
+      <p>Capture or load a case in the checklist, then generate the report again.</p>
+      <a className="primary-btn" href="/">Back to checklist</a>
+    </main>
+  );
+}
+
+function formatReportTimestamp(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not dated";
+  return date.toLocaleString("en-ZA", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function PresenterApp() {
@@ -1684,54 +1889,11 @@ function hasWitnessDetails(witness) {
   return Boolean(String(witness.name || "").trim() || String(witness.idNumber || "").trim());
 }
 
-function getProgress(sections, records) {
-  const rows = collectDocumentRows(sections, records);
-  const applicable = rows.filter((row) => row.record.status !== "N/A");
-  const have = applicable.filter((row) => row.record.status === "Have").length;
-  const missing = applicable.filter((row) => row.record.status === "Missing").length;
-  const unclear = applicable.filter((row) => row.record.status === "Received but unclear").length;
-  const notApplicable = rows.length - applicable.length;
-
-  return {
-    total: rows.length,
-    applicable: applicable.length,
-    have,
-    missing,
-    unclear,
-    notApplicable,
-    actionable: missing + unclear,
-    percent: applicable.length ? Math.round((have / applicable.length) * 100) : 100,
-  };
-}
-
-function getReadiness(progress) {
-  if (progress.missing > 0) return "Not ready";
-  if (progress.unclear > 0) return "Ready for follow-up";
-  if (progress.have > 0 && progress.percent === 100) return "Ready for trustee pack";
-  return "Ready for review";
-}
-
 function readinessTone(readiness) {
   if (readiness === "Not ready") return "missing";
   if (readiness === "Ready for follow-up") return "warning";
   if (readiness === "Ready for trustee pack") return "complete";
   return "";
-}
-
-function collectDocumentRows(sections, records) {
-  return sections.flatMap((section) =>
-    section.docs.map((item) => {
-      const key = docKey(section.key, item.id);
-      return {
-        key,
-        group: section.title,
-        subtitle: section.subtitle,
-        title: item.title,
-        note: item.note,
-        record: getDocumentRecord(records, key),
-      };
-    }),
-  );
 }
 
 function buildFullCaseInfoText(caseData, sections, progress, readiness) {
@@ -1952,24 +2114,8 @@ function downloadBlob(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
-function docKey(sectionKey, docId) {
-  return `${sectionKey}::${docId}`;
-}
-
 function statusClass(status) {
   return String(status || "Missing").toLowerCase().replace(/[^a-z0-9]+/g, "-");
-}
-
-function getDocumentRecord(records, key) {
-  const record = records?.[key];
-  if (record && typeof record === "object" && !Array.isArray(record)) {
-    return {
-      status: STATUSES.includes(record.status) ? record.status : (record.checked ? "Have" : "Missing"),
-      notes: record.notes || "",
-    };
-  }
-  if (record === true) return emptyRecord("Have");
-  return emptyRecord("Missing");
 }
 
 function ageLabel(person) {
@@ -2150,4 +2296,6 @@ function migrateDocumentRecords(documentRecords, checked) {
 }
 
 const rootView = resolveAppView(window.location.pathname);
-createRoot(document.getElementById("root")).render(rootView === "presenter" ? <PresenterApp /> : <App />);
+createRoot(document.getElementById("root")).render(
+  rootView === "presenter" ? <PresenterApp /> : rootView === "report" ? <ReportApp /> : <App />,
+);

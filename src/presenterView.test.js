@@ -8,7 +8,6 @@ const {
   getAllocationSummary,
   normalizePresenter,
   removePresenterBeneficiary,
-  resolveAppView,
 } = presenterView;
 
 const beneficiaries = [
@@ -112,13 +111,4 @@ test("removing a beneficiary also removes their Presenter finding", () => {
     Object.keys(removePresenterBeneficiary(presenter, "beneficiary-1").beneficiaryFindings),
     ["beneficiary-2"],
   );
-});
-
-test("only the dedicated Presenter path selects Presenter view", () => {
-  assert.equal(typeof resolveAppView, "function", "resolveAppView should be implemented");
-
-  assert.equal(resolveAppView("/presenter"), "presenter");
-  assert.equal(resolveAppView("/presenter/"), "presenter");
-  assert.equal(resolveAppView("/"), "checklist");
-  assert.equal(resolveAppView("/presenter-notes"), "checklist");
 });

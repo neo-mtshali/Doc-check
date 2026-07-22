@@ -109,10 +109,6 @@ export function getAllocationSummary(beneficiaryFindings = {}) {
   };
 }
 
-export function resolveAppView(pathname = "/") {
-  return /^\/presenter\/?$/.test(pathname) ? "presenter" : "checklist";
-}
-
 function textValue(value) {
   return typeof value === "string" || typeof value === "number" ? String(value) : "";
 }

@@ -16,6 +16,8 @@ import { getNextActionMenuState } from "./actionMenu.js";
 import { buildReportModel } from "./reportView.js";
 import { buildSavedCasesExport, extractSavedCaseCandidates, mergeSavedCases } from "./savedCasesTransfer.js";
 import { buildBatchDocumentReportZip } from "./batchDocumentReport.js";
+import { CaseConflictError, DuplicateCaseReferenceError } from "./caseRepository.js";
+import { PlatformGate, storageKey } from "./platform.jsx";
 import {
   createEmptyBeneficiaryFinding,
   createEmptyPresenter,
@@ -38,6 +40,7 @@ import {
 
 const STORAGE_KEY = "caseDocumentChecklist.v1";
 const SAVED_CASES_KEY = "caseDocumentChecklist.savedCases.v1";
+const REMOTE_META_KEY = "caseDocumentChecklist.remoteCase.v1";
 const MIN_WITNESSES = 2;
 const CERTIFICATION_YEAR = new Date().getFullYear();
 
@@ -258,9 +261,16 @@ const initialCase = {
   presenter: createEmptyPresenter(),
 };
 
-function App() {
-  const [caseData, setCaseData] = useState(() => loadSavedCase());
-  const [savedCases, setSavedCases] = useState(() => loadSavedCases());
+function App({ platform = null }) {
+  const userId = platform?.session?.user?.id;
+  const draftStorageKey = storageKey(STORAGE_KEY, userId);
+  const casesStorageKey = storageKey(SAVED_CASES_KEY, userId);
+  const remoteMetaStorageKey = storageKey(REMOTE_META_KEY, userId);
+  const remoteEnabled = Boolean(platform?.enabled);
+  const [caseData, setCaseData] = useState(() => loadSavedCase(userId));
+  const [savedCases, setSavedCases] = useState(() => loadSavedCases(userId));
+  const [activeRemote, setActiveRemote] = useState(() => loadActiveRemote(userId));
+  const [remoteSaveState, setRemoteSaveState] = useState("idle");
   const [preferredReviewMode, setPreferredReviewMode] = useState(null);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [openPanels, setOpenPanels] = useState(() => new Set([getInitialOpenPanel(caseData, savedCases)]));
@@ -282,17 +292,22 @@ function App() {
   const pendingNewBeneficiaryIdRef = useRef(null);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(caseData));
-  }, [caseData]);
+    localStorage.setItem(draftStorageKey, JSON.stringify(caseData));
+  }, [caseData, draftStorageKey]);
 
   useEffect(() => {
-    localStorage.setItem(SAVED_CASES_KEY, JSON.stringify(savedCases));
-  }, [savedCases]);
+    localStorage.setItem(casesStorageKey, JSON.stringify(savedCases));
+  }, [savedCases, casesStorageKey]);
+
+  useEffect(() => {
+    if (activeRemote) localStorage.setItem(remoteMetaStorageKey, JSON.stringify(activeRemote));
+    else localStorage.removeItem(remoteMetaStorageKey);
+  }, [activeRemote, remoteMetaStorageKey]);
 
   useEffect(() => {
     const synchronize = (event) => {
       if (event.storageArea !== localStorage) return;
-      if (event.key === STORAGE_KEY && event.newValue) {
+      if (event.key === draftStorageKey && event.newValue) {
         try {
           setCaseData(normalizeImportedCase(JSON.parse(event.newValue)));
           setHasInteracted(true);
@@ -300,7 +315,7 @@ function App() {
           // Ignore malformed data from an unrelated browser tab.
         }
       }
-      if (event.key === SAVED_CASES_KEY && event.newValue) {
+      if (event.key === casesStorageKey && event.newValue) {
         try {
           setSavedCases(normalizeSavedCases(JSON.parse(event.newValue)));
         } catch {
@@ -310,7 +325,26 @@ function App() {
     };
     window.addEventListener("storage", synchronize);
     return () => window.removeEventListener("storage", synchronize);
-  }, []);
+  }, [draftStorageKey, casesStorageKey]);
+
+  useEffect(() => {
+    if (!remoteEnabled) return undefined;
+    let active = true;
+    const refresh = async () => {
+      try {
+        const entries = await platform.repository.listCases();
+        if (active) setSavedCases(normalizeSavedCases(entries));
+      } catch (error) {
+        if (active) announce(`Could not refresh database cases: ${error.message}`, "error", false);
+      }
+    };
+    refresh();
+    const unsubscribe = platform.repository.subscribe(refresh);
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [remoteEnabled, platform?.repository]);
 
   useEffect(() => {
     if (!pendingNewBeneficiaryIdRef.current || !newBeneficiaryNameRef.current) return;
@@ -372,13 +406,17 @@ function App() {
   );
   const caseSaveState = useMemo(() => getCaseSaveState(caseData, savedCases), [caseData, savedCases]);
   const meaningfulDraft = useMemo(() => hasMeaningfulCaseData(caseData), [caseData]);
-  const draftLabel = !meaningfulDraft
-    ? "Draft saved locally"
-    : caseSaveState === "saved"
-      ? "Saved"
-      : restoredDraft.current && !hasInteracted
-        ? "Draft restored"
-        : "Changes not saved to case list";
+  const draftLabel = remoteSaveState === "syncing"
+    ? "Saving to database…"
+    : remoteSaveState === "error"
+      ? "Not synced · draft kept locally"
+      : !meaningfulDraft
+        ? "Draft saved locally"
+        : caseSaveState === "saved"
+          ? remoteEnabled ? "Saved to database" : "Saved"
+          : restoredDraft.current && !hasInteracted
+            ? "Draft restored"
+            : remoteEnabled ? "Changes not synced" : "Changes not saved to case list";
   const missingSpouse = hasMissingSpouseBeneficiary(caseData);
 
   function announce(message, tone = "success", dismiss = tone !== "error") {
@@ -520,6 +558,8 @@ function App() {
       presenter: createEmptyPresenter(),
     };
     setCaseData(nextCase);
+    setActiveRemote(null);
+    setRemoteSaveState("idle");
     setReferenceError("");
     setHasInteracted(false);
     setOpenPanels(new Set([savedCases.length ? "saved-cases" : "case-setup"]));
@@ -545,7 +585,7 @@ function App() {
     });
   }
 
-  function saveCurrentCase() {
+  async function saveCurrentCase() {
     const error = validateCaseReference(caseData.caseReference);
     if (error) {
       setReferenceError(error);
@@ -555,6 +595,28 @@ function App() {
       return;
     }
     const entry = buildSavedCaseEntry(caseData, progress, readiness);
+    if (remoteEnabled) {
+      setRemoteSaveState("syncing");
+      try {
+        const saved = await platform.repository.saveCase(entry, activeRemote);
+        setSavedCases((current) => [saved, ...current.filter((item) =>
+          item.remoteId !== saved.remoteId && item.caseReference !== saved.caseReference,
+        )].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)));
+        setActiveRemote({
+          id: saved.remoteId,
+          version: saved.remoteVersion,
+          ownerId: saved.ownerId,
+        });
+        setReferenceError("");
+        setHasInteracted(false);
+        setRemoteSaveState("idle");
+        announce(`Case ${saved.caseReference} saved to the database.`);
+      } catch (saveError) {
+        setRemoteSaveState("error");
+        announce(remoteSaveErrorMessage(saveError), "error", false);
+      }
+      return;
+    }
     setSavedCases((current) => {
       const withoutCurrent = current.filter((item) => item.id !== entry.id);
       return [entry, ...withoutCurrent].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
@@ -568,6 +630,12 @@ function App() {
     const imported = normalizeImportedCase(entry.caseData);
     setPreferredReviewMode(null);
     setCaseData(imported);
+    setActiveRemote(entry.remoteId ? {
+      id: entry.remoteId,
+      version: entry.remoteVersion,
+      ownerId: entry.ownerId,
+    } : null);
+    setRemoteSaveState("idle");
     setReferenceError("");
     setHasInteracted(false);
     setOpenPanels(new Set([getInitialOpenPanel(imported, savedCases)]));
@@ -575,13 +643,21 @@ function App() {
   }
 
   function confirmRemoveSavedCase(entry) {
+    const databaseCase = remoteEnabled && entry.remoteId;
     requestConfirmation({
-      title: `Remove ${entry.caseReference || "this saved case"}?`,
-      message: "This removes the saved snapshot. The current draft will not be changed.",
-      confirmLabel: "Remove saved case",
-      onConfirm: () => {
-        setSavedCases((current) => current.filter((item) => item.id !== entry.id));
-        announce(`Saved case ${entry.caseReference || "record"} removed.`);
+      title: `${databaseCase ? "Archive" : "Remove"} ${entry.caseReference || "this saved case"}?`,
+      message: databaseCase
+        ? "This hides the case from active lists but preserves it for management oversight."
+        : "This removes the saved snapshot. The current draft will not be changed.",
+      confirmLabel: databaseCase ? "Archive case" : "Remove saved case",
+      onConfirm: async () => {
+        try {
+          if (databaseCase) await platform.repository.archiveCase(entry);
+          setSavedCases((current) => current.filter((item) => item.id !== entry.id));
+          announce(`Saved case ${entry.caseReference || "record"} ${databaseCase ? "archived" : "removed"}.`);
+        } catch (archiveError) {
+          announce(remoteSaveErrorMessage(archiveError), "error", false);
+        }
       },
     });
   }
@@ -614,7 +690,7 @@ function App() {
   }
 
   function openReport() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(caseData));
+    localStorage.setItem(draftStorageKey, JSON.stringify(caseData));
     window.open("/report", "_blank", "noopener,noreferrer");
   }
 
@@ -670,7 +746,21 @@ function App() {
       if (!candidates.length) throw new Error("No cases found");
 
       const imported = candidates.map(normalizeSavedCaseCandidate);
-      setSavedCases((current) => mergeSavedCases(current, imported));
+      if (remoteEnabled) {
+        const failures = [];
+        for (const entry of imported) {
+          try {
+            await platform.repository.saveCase(entry);
+          } catch (uploadError) {
+            failures.push(entry.caseReference);
+          }
+        }
+        const refreshed = await platform.repository.listCases();
+        setSavedCases(normalizeSavedCases(refreshed));
+        if (failures.length) throw new Error(`${failures.length} cases could not be uploaded`);
+      } else {
+        setSavedCases((current) => mergeSavedCases(current, imported));
+      }
       setOpenPanels((current) => new Set([...current, "saved-cases"]));
       announce(`Batch uploaded ${imported.length} ${imported.length === 1 ? "case" : "cases"}.`);
     } catch {
@@ -690,8 +780,8 @@ function App() {
           <span className={`draft-state ${caseSaveState}`}>{draftLabel}</span>
         </div>
         <div className="top-actions">
-          <button type="button" className="primary-btn" onClick={saveCurrentCase}>Save case</button>
-          <button type="button" className="secondary-btn" onClick={openPresenter}>Open Presenter</button>
+          <button type="button" className="primary-btn" onClick={saveCurrentCase} disabled={remoteSaveState === "syncing"}>Save case</button>
+          {platform?.profile?.role !== "tracer" ? <button type="button" className="secondary-btn" onClick={openPresenter}>Open Presenter</button> : null}
           <button type="button" className="secondary-btn" onClick={confirmResetCase}>New case</button>
           <div className="action-menu" ref={actionMenuRef}>
             <button
@@ -1014,13 +1104,15 @@ function App() {
   );
 }
 
-function ReportApp() {
-  const [caseData, setCaseData] = useState(() => loadSavedCase());
+function ReportApp({ platform = null }) {
+  const userId = platform?.session?.user?.id;
+  const draftStorageKey = storageKey(STORAGE_KEY, userId);
+  const [caseData, setCaseData] = useState(() => loadSavedCase(userId));
   const [generatedAt, setGeneratedAt] = useState(() => new Date().toISOString());
 
   useEffect(() => {
     const synchronize = (event) => {
-      if (event.storageArea !== localStorage || event.key !== STORAGE_KEY || !event.newValue) return;
+      if (event.storageArea !== localStorage || event.key !== draftStorageKey || !event.newValue) return;
       try {
         setCaseData(normalizeImportedCase(JSON.parse(event.newValue)));
         setGeneratedAt(new Date().toISOString());
@@ -1030,7 +1122,7 @@ function ReportApp() {
     };
     window.addEventListener("storage", synchronize);
     return () => window.removeEventListener("storage", synchronize);
-  }, []);
+  }, [draftStorageKey]);
 
   const sections = useMemo(() => buildSections(caseData), [caseData]);
   const setupSections = useMemo(() => getSetupSectionStates(caseData), [caseData]);
@@ -1209,30 +1301,39 @@ function formatReportTimestamp(value) {
   });
 }
 
-function PresenterApp() {
-  const [caseData, setCaseData] = useState(() => loadSavedCase());
-  const [savedCases, setSavedCases] = useState(() => loadSavedCases());
+function PresenterApp({ platform = null, readOnly = false }) {
+  const userId = platform?.session?.user?.id;
+  const draftStorageKey = storageKey(STORAGE_KEY, userId);
+  const casesStorageKey = storageKey(SAVED_CASES_KEY, userId);
+  const [caseData, setCaseData] = useState(() => loadSavedCase(userId));
+  const [savedCases, setSavedCases] = useState(() => loadSavedCases(userId));
+  const [activeRemote, setActiveRemote] = useState(() => loadActiveRemote(userId));
   const [feedback, setFeedback] = useState("");
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(caseData));
-  }, [caseData]);
+    localStorage.setItem(draftStorageKey, JSON.stringify(caseData));
+  }, [caseData, draftStorageKey]);
 
   useEffect(() => {
-    localStorage.setItem(SAVED_CASES_KEY, JSON.stringify(savedCases));
-  }, [savedCases]);
+    localStorage.setItem(casesStorageKey, JSON.stringify(savedCases));
+  }, [savedCases, casesStorageKey]);
+
+  useEffect(() => {
+    const key = storageKey(REMOTE_META_KEY, userId);
+    if (activeRemote) localStorage.setItem(key, JSON.stringify(activeRemote));
+  }, [activeRemote, userId]);
 
   useEffect(() => {
     const synchronize = (event) => {
       if (event.storageArea !== localStorage) return;
-      if (event.key === STORAGE_KEY && event.newValue) {
+      if (event.key === draftStorageKey && event.newValue) {
         try {
           setCaseData(normalizeImportedCase(JSON.parse(event.newValue)));
         } catch {
           // Ignore malformed data from an unrelated browser tab.
         }
       }
-      if (event.key === SAVED_CASES_KEY && event.newValue) {
+      if (event.key === casesStorageKey && event.newValue) {
         try {
           setSavedCases(normalizeSavedCases(JSON.parse(event.newValue)));
         } catch {
@@ -1242,7 +1343,7 @@ function PresenterApp() {
     };
     window.addEventListener("storage", synchronize);
     return () => window.removeEventListener("storage", synchronize);
-  }, []);
+  }, [draftStorageKey, casesStorageKey]);
 
   const sections = useMemo(() => buildSections(caseData), [caseData]);
   const progress = useMemo(() => getProgress(sections, caseData.documentRecords), [sections, caseData.documentRecords]);
@@ -1293,13 +1394,24 @@ function PresenterApp() {
     });
   }
 
-  function saveCurrentCase() {
+  async function saveCurrentCase() {
     const error = validateCaseReference(caseData.caseReference);
     if (error) {
       setFeedback(error);
       return;
     }
     const entry = buildSavedCaseEntry(caseData, progress, readiness);
+    if (platform?.enabled) {
+      try {
+        const saved = await platform.repository.saveCase(entry, activeRemote);
+        setActiveRemote({ id: saved.remoteId, version: saved.remoteVersion, ownerId: saved.ownerId });
+        setSavedCases((current) => [saved, ...current.filter((item) => item.remoteId !== saved.remoteId)]);
+        setFeedback(`Case ${saved.caseReference} saved to the database.`);
+      } catch (saveError) {
+        setFeedback(remoteSaveErrorMessage(saveError));
+      }
+      return;
+    }
     setSavedCases((current) => [entry, ...current.filter((item) => item.id !== entry.id)]
       .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)));
     setFeedback(`Case ${entry.caseReference} saved.`);
@@ -1320,12 +1432,14 @@ function PresenterApp() {
         <div className="presenter-actions" aria-label="Presenter actions">
           <a className="secondary-btn" href="/">Back to checklist</a>
           <button type="button" className="secondary-btn" onClick={() => window.print()}>Print notes</button>
-          <button type="button" className="primary-btn" onClick={saveCurrentCase}>Save case</button>
+          {!readOnly ? <button type="button" className="primary-btn" onClick={saveCurrentCase}>Save case</button> : null}
         </div>
       </header>
 
       {feedback ? <div className="presenter-feedback" role="status">{feedback}</div> : null}
 
+      {readOnly ? <p className="presenter-readonly-notice">Read-only internal view. Only an administrator can change these notes.</p> : null}
+      <fieldset className="presenter-content-lock" disabled={readOnly}>
       <section className="presenter-hero" aria-label="Case at a glance">
         <div>
           <span>Case readiness</span>
@@ -1454,6 +1568,7 @@ function PresenterApp() {
           </div>) : <p className="presenter-empty-note">No witness details captured.</p>}
         </div>
       </section>
+      </fieldset>
     </main>
   );
 }
@@ -1608,6 +1723,7 @@ function SavedCasesPanel({ savedCases, onLoad, onRemove, onExport, onExportDocum
               <div className="saved-case-main">
                 <strong>{item.caseReference || "No case reference"}</strong>
                 <span>{item.deceasedName || "Deceased not captured"}</span>
+                {item.ownerName ? <span>Tracer: {item.ownerName}</span> : null}
               </div>
               <div className="saved-case-progress">
                 <div>
@@ -1622,7 +1738,7 @@ function SavedCasesPanel({ savedCases, onLoad, onRemove, onExport, onExportDocum
               </div>
               <footer>
                 <button type="button" className="small-btn" onClick={() => onLoad(item)}>Load</button>
-                <button type="button" className="text-danger" onClick={() => onRemove(item)}>Remove</button>
+                <button type="button" className="text-danger" onClick={() => onRemove(item)}>{item.remoteId ? "Archive" : "Remove"}</button>
               </footer>
             </article>
               ))}
@@ -2206,18 +2322,18 @@ function ageFromSouthAfricanId(value) {
   return { age, birthDate };
 }
 
-function loadSavedCase() {
+function loadSavedCase(userId) {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    const saved = JSON.parse(localStorage.getItem(storageKey(STORAGE_KEY, userId)));
     return normalizeImportedCase(saved);
   } catch {
     return normalizeImportedCase(initialCase);
   }
 }
 
-function loadSavedCases() {
+function loadSavedCases(userId) {
   try {
-    const saved = JSON.parse(localStorage.getItem(SAVED_CASES_KEY));
+    const saved = JSON.parse(localStorage.getItem(storageKey(SAVED_CASES_KEY, userId)));
     return normalizeSavedCases(saved);
   } catch {
     return [];
@@ -2236,8 +2352,32 @@ function normalizeSavedCases(saved) {
       progress: item.progress || { percent: 0, have: 0, applicable: 0, actionable: 0 },
       updatedAt: item.updatedAt || new Date(0).toISOString(),
       caseData: normalizeImportedCase(item.caseData),
+      remoteId: item.remoteId || "",
+      remoteVersion: Number(item.remoteVersion || 0),
+      ownerId: item.ownerId || "",
+      ownerName: item.ownerName || "",
+      archivedAt: item.archivedAt || null,
     }))
     .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+}
+
+function loadActiveRemote(userId) {
+  try {
+    const value = JSON.parse(localStorage.getItem(storageKey(REMOTE_META_KEY, userId)));
+    return value?.id ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function remoteSaveErrorMessage(error) {
+  if (error instanceof CaseConflictError) {
+    return "This case changed on another device. Reload the database copy before saving again; your draft is still stored locally.";
+  }
+  if (error instanceof DuplicateCaseReferenceError) {
+    return "That case reference already belongs to another saved case. Your draft is still local; contact an administrator.";
+  }
+  return `Could not sync this case. Your draft is still stored locally. ${error?.message || ""}`.trim();
 }
 
 function buildSavedCaseEntry(caseData, progress, readiness) {
@@ -2253,6 +2393,8 @@ function buildSavedCaseEntry(caseData, progress, readiness) {
       have: progress.have,
       applicable: progress.applicable,
       actionable: progress.actionable,
+      missing: progress.missing,
+      unclear: progress.unclear,
     },
     updatedAt: new Date().toISOString(),
     caseData: normalizeImportedCase(caseData),
@@ -2364,5 +2506,10 @@ function migrateDocumentRecords(documentRecords, checked) {
 
 const rootView = resolveAppView(window.location.pathname);
 createRoot(document.getElementById("root")).render(
-  rootView === "presenter" ? <PresenterApp /> : rootView === "report" ? <ReportApp /> : <App />,
+  <PlatformGate
+    rootView={rootView}
+    App={App}
+    PresenterApp={PresenterApp}
+    ReportApp={ReportApp}
+  />,
 );

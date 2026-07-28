@@ -4,14 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node scripts/dev.mjs",
+    "dev": "node init && node scripts/dev.mjs",
     "vite": "vite --host 127.0.0.1",
-    "build": "vite build",
+    "build": "node init && vite build",
     "preview": "node app/server.mjs",
     "test": "node --test src/*.test.js",
     "check": "vite build"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.110.9",
     "@vitejs/plugin-react": "^4.4.1",
     "fflate": "^0.8.3",
     "jspdf": "^4.2.1",

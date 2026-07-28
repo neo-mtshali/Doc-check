@@ -12,6 +12,7 @@
     "check": "vite build"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.110.9",
     "@vitejs/plugin-react": "^4.4.1",
     "fflate": "^0.8.3",
     "jspdf": "^4.2.1",

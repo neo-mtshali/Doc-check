@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import { Analytics } from "@vercel/analytics/react";
 import { resolveAppView } from "./appView.js";
 import {
   DOCUMENT_STATUSES as STATUSES,
@@ -2364,5 +2365,8 @@ function migrateDocumentRecords(documentRecords, checked) {
 
 const rootView = resolveAppView(window.location.pathname);
 createRoot(document.getElementById("root")).render(
-  rootView === "presenter" ? <PresenterApp /> : rootView === "report" ? <ReportApp /> : <App />,
+  <>
+    {rootView === "presenter" ? <PresenterApp /> : rootView === "report" ? <ReportApp /> : <App />}
+    <Analytics />
+  </>,
 );

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node scripts/dev.mjs",
+    "dev": "node api.js && node scripts/dev.mjs",
     "vite": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "node app/server.mjs",
@@ -12,6 +12,7 @@
     "check": "vite build"
   },
   "dependencies": {
+    "@vercel/analytics": "^2.0.1",
     "@vitejs/plugin-react": "^4.4.1",
     "fflate": "^0.8.3",
     "jspdf": "^4.2.1",
